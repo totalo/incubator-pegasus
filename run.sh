@@ -519,7 +519,7 @@ function usage_start_onebox()
 function run_start_onebox()
 {
     META_COUNT=3
-    REPLICA_COUNT=3
+    REPLICA_COUNT=5
     COLLECTOR_COUNT=0
     APP_NAME=temp
     PARTITION_COUNT=8
