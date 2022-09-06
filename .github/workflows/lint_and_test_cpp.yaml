@@ -32,6 +32,16 @@ on:
       - 'v[0-9]+.*' # release branch
       - ci-test # testing branch for github action
       - '*dev'
+    paths:
+      - '.github/workflows/lint_and_test_cpp.yaml'
+      - '.github/workflows/thirdparty-regular-push.yml'
+      - 'docker/thirdparties-src/**'
+      - 'docker/thirdparties-bin/**'
+      - 'CMakeLists.txt'
+      - 'run.sh'
+      - 'cmake_modules/**'
+      - 'src/**'
+      - 'thirdparty/**'
 
   # for manually triggering workflow
   workflow_dispatch:
@@ -55,7 +65,7 @@ jobs:
     needs: cpp_clang_format_linter
     runs-on: ubuntu-latest
     container:
-      image: apache/pegasus:thirdparties-bin-ubuntu1804-${{ github.base_ref }}
+      image: apache/pegasus:thirdparties-bin-test-ubuntu1804-${{ github.base_ref }}
     steps:
       - uses: actions/checkout@v2
       - name: Setup cache
@@ -68,14 +78,10 @@ jobs:
         id: changes
         with:
           filters: |
-            base:
-              - 'cmake_modules/**'
-              - 'CMakeLists.txt'
-              - 'run.sh'
-              - '.github/workflows/lint_and_test_cpp.yaml'
-            src:
-              - 'src/**'
             thirdparty:
+              - '.github/workflows/thirdparty-regular-push.yml'
+              - 'docker/thirdparties-src/**'
+              - 'docker/thirdparties-bin/**'
               - 'thirdparty/**'
       - name: Unpack prebuilt third-parties
         if: steps.changes.outputs.thirdparty == 'false'
@@ -85,25 +91,22 @@ jobs:
         working-directory: thirdparty
         run: |
           mkdir build
-          cmake -DCMAKE_BUILD_TYPE=Release -B build/
+          cmake -DCMAKE_BUILD_TYPE=Release -DROCKSDB_PORTABLE=ON -B build/
           cmake --build build/ -j $(nproc)
       - name: Compilation
-        if: steps.changes.outputs.base == 'true' || steps.changes.outputs.src == 'true' || steps.changes.outputs.thirdparty == 'true'
         run: |
           ccache -p
           ccache -z
           ./run.sh build --test --skip_thirdparty -j $(nproc) -t release
           ccache -s
       - name: Pack Server
-        if: steps.changes.outputs.base == 'true' || steps.changes.outputs.src == 'true' || steps.changes.outputs.thirdparty == 'true'
         run: ./run.sh pack_server
       - name: Pack Tools
-        if: steps.changes.outputs.base == 'true' || steps.changes.outputs.src == 'true' || steps.changes.outputs.thirdparty == 'true'
         run: ./run.sh pack_tools
       - name: Tar files
         run: |
           rm -rf thirdparty
-          tar -zcvhf release__builder.tar DSN_ROOT/ src/builder/bin src/builder/src/server/test/config.ini  --exclude='*CMakeFiles*'
+          tar -zcvhf release__builder.tar DSN_ROOT/ src/builder/bin src/builder/src/server/test/config.ini --exclude='*CMakeFiles*'
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
@@ -143,7 +146,7 @@ jobs:
     needs: build_Release
     runs-on: ubuntu-latest
     container:
-      image: apache/pegasus:thirdparties-bin-ubuntu1804-${{ github.base_ref }}
+      image: apache/pegasus:thirdparties-bin-test-ubuntu1804-${{ github.base_ref }}
       options: --cap-add=SYS_PTRACE
     steps:
       - uses: actions/checkout@v2
@@ -169,7 +172,7 @@ jobs:
     needs: cpp_clang_format_linter
     runs-on: ubuntu-latest
     container:
-      image: apache/pegasus:thirdparties-bin-ubuntu1804-${{ github.base_ref }}
+      image: apache/pegasus:thirdparties-bin-test-ubuntu1804-${{ github.base_ref }}
     steps:
       - uses: actions/checkout@v2
       - name: Setup cache
@@ -182,14 +185,10 @@ jobs:
         id: changes
         with:
           filters: |
-            base:
-              - 'cmake_modules/**'
-              - 'CMakeLists.txt'
-              - 'run.sh'
-              - '.github/workflows/lint_and_test_cpp.yaml'
-            src:
-              - 'src/**'
             thirdparty:
+              - '.github/workflows/thirdparty-regular-push.yml'
+              - 'docker/thirdparties-src/**'
+              - 'docker/thirdparties-bin/**'
               - 'thirdparty/**'
       - name: Unpack prebuilt third-parties
         if: steps.changes.outputs.thirdparty == 'false'
@@ -199,10 +198,9 @@ jobs:
         working-directory: thirdparty
         run: |
           mkdir build
-          cmake -DCMAKE_BUILD_TYPE=Release -B build/
+          cmake -DCMAKE_BUILD_TYPE=Release -DROCKSDB_PORTABLE=ON -B build/
           cmake --build build/ -j $(nproc)
       - name: Compilation
-        if: steps.changes.outputs.base == 'true' || steps.changes.outputs.src == 'true' || steps.changes.outputs.thirdparty == 'true'
         run: |
           ccache -p
           ccache -z
@@ -211,7 +209,7 @@ jobs:
       - name: Tar files
         run: |
           rm -rf thirdparty
-          tar -zcvhf release_address_builder.tar DSN_ROOT/ src/builder/bin src/builder/src/server/test/config.ini  --exclude='*CMakeFiles*'
+          tar -zcvhf release_address_builder.tar DSN_ROOT/ src/builder/bin src/builder/src/server/test/config.ini --exclude='*CMakeFiles*'
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
@@ -251,7 +249,7 @@ jobs:
     needs: build_ASAN
     runs-on: ubuntu-latest
     container:
-      image: apache/pegasus:thirdparties-bin-ubuntu1804-${{ github.base_ref }}
+      image: apache/pegasus:thirdparties-bin-test-ubuntu1804-${{ github.base_ref }}
       options: --cap-add=SYS_PTRACE
     steps:
       - uses: actions/checkout@v2
@@ -277,7 +275,7 @@ jobs:
     needs: cpp_clang_format_linter
     runs-on: ubuntu-latest
     container:
-      image: apache/pegasus:thirdparties-bin-ubuntu1804-${{ github.base_ref }}
+      image: apache/pegasus:thirdparties-bin-test-ubuntu1804-${{ github.base_ref }}
     steps:
       - uses: actions/checkout@v2
       - name: Setup cache
@@ -290,14 +288,10 @@ jobs:
         id: changes
         with:
           filters: |
-            base:
-              - 'cmake_modules/**'
-              - 'CMakeLists.txt'
-              - 'run.sh'
-              - '.github/workflows/lint_and_test_cpp.yaml'
-            src:
-              - 'src/**'
             thirdparty:
+              - '.github/workflows/thirdparty-regular-push.yml'
+              - 'docker/thirdparties-src/**'
+              - 'docker/thirdparties-bin/**'
               - 'thirdparty/**'
       - name: Unpack prebuilt third-parties
         if: steps.changes.outputs.thirdparty == 'false'
@@ -307,10 +301,9 @@ jobs:
         working-directory: thirdparty
         run: |
           mkdir build
-          cmake -DCMAKE_BUILD_TYPE=Release -B build/
+          cmake -DCMAKE_BUILD_TYPE=Release -DROCKSDB_PORTABLE=ON -B build/
           cmake --build build/ -j $(nproc)
       - name: Compilation
-        if: steps.changes.outputs.base == 'true' || steps.changes.outputs.src == 'true' || steps.changes.outputs.thirdparty == 'true'
         run: |
           ccache -p
           ccache -z
@@ -319,7 +312,7 @@ jobs:
       - name: Tar files
         run: |
           rm -rf thirdparty
-          tar -zcvhf release_undefined_builder.tar DSN_ROOT/ src/builder/bin src/builder/src/server/test/config.ini  --exclude='*CMakeFiles*'
+          tar -zcvhf release_undefined_builder.tar DSN_ROOT/ src/builder/bin src/builder/src/server/test/config.ini --exclude='*CMakeFiles*'
       - name: Upload Artifact
         uses: actions/upload-artifact@v3
         with:
@@ -359,7 +352,7 @@ jobs:
     needs: build_UBSAN
     runs-on: ubuntu-latest
     container:
-      image: apache/pegasus:thirdparties-bin-ubuntu1804-${{ github.base_ref }}
+      image: apache/pegasus:thirdparties-bin-test-ubuntu1804-${{ github.base_ref }}
       options: --cap-add=SYS_PTRACE
     steps:
       - uses: actions/checkout@v2
@@ -412,16 +405,7 @@ jobs:
           mkdir -p build
           cmake -DCMAKE_BUILD_TYPE=Release -B build/ -DMACOS_OPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}
           cmake --build build/ -j $(sysctl -n hw.physicalcpu)
-      - uses: dorny/paths-filter@v2
-        id: changes
-        with:
-          filters: |
-            src:
-              - 'src/**'
-            thirdparty:
-              - 'thirdparty/**'
       - name: Compilation
-        if: steps.changes.outputs.src == 'true' || steps.changes.outputs.thirdparty == 'true'
         run: |
           ccache -p
           ccache -z
