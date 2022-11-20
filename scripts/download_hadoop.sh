@@ -19,50 +19,13 @@
 
 set -e
 
-if [ $# -lt 1 ]; then
-    echo "Target HADOOP_BIN_PATH is not provided, thus do not try to download hadoop"
-    exit 0
-fi
+CWD=$(cd $(dirname $0) && pwd)
 
-HADOOP_BIN_PATH=$1
-if [ -d ${HADOOP_BIN_PATH} ]; then
-    echo "Target HADOOP_BIN_PATH ${HADOOP_BIN_PATH} has existed, thus do not try to download hadoop"
-    exit 0
+if [ $# -ge 1 ]; then
+    HADOOP_BIN_PATH=$1
 fi
 
 HADOOP_VERSION=2.8.4
 HADOOP_DIR_NAME=hadoop-${HADOOP_VERSION}
-HADOOP_PACKAGE_NAME=${HADOOP_DIR_NAME}.tar.gz
-if [ ! -f ${HADOOP_PACKAGE_NAME} ]; then
-    echo "Downloading hadoop..."
-
-    DOWNLOAD_URL="https://pegasus-thirdparty-package.oss-cn-beijing.aliyuncs.com/${HADOOP_PACKAGE_NAME}"
-    if ! wget -T 10 -t 5 ${DOWNLOAD_URL}; then
-        echo "ERROR: download hadoop failed"
-        exit 1
-    fi
-
-    HADOOP_PACKAGE_MD5="b30b409bb69185003b3babd1504ba224"
-    if [ `md5sum ${HADOOP_PACKAGE_NAME} | awk '{print$1}'` != ${HADOOP_PACKAGE_MD5} ]; then
-        echo "Check file ${HADOOP_PACKAGE_NAME} md5sum failed!"
-        exit 1
-    fi
-fi
-
-rm -rf ${HADOOP_DIR_NAME}
-
-echo "Decompressing hadoop..."
-if ! tar xf ${HADOOP_PACKAGE_NAME}; then
-    echo "ERROR: decompress hadoop failed"
-    rm -f ${HADOOP_PACKAGE_NAME}
-    exit 1
-fi
-
-rm -f ${HADOOP_PACKAGE_NAME}
-
-if [ ! -d ${HADOOP_DIR_NAME} ]; then
-    echo "ERROR: ${HADOOP_DIR_NAME} does not exist"
-    exit 1
-fi
-
-mv ${HADOOP_DIR_NAME} ${HADOOP_BIN_PATH}
+HADOOP_PACKAGE_MD5="b30b409bb69185003b3babd1504ba224"
+${CWD}/download_package.sh ${HADOOP_DIR_NAME} ${HADOOP_PACKAGE_MD5} ${HADOOP_BIN_PATH}

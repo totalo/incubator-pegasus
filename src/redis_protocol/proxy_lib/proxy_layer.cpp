@@ -17,10 +17,11 @@
  * under the License.
  */
 
-#include <dsn/tool-api/task_spec.h>
+#include "runtime/task/task_spec.h"
 
 #include <rrdb/rrdb.code.definition.h>
 #include "proxy_layer.h"
+#include "utils/fmt_logging.h"
 
 namespace pegasus {
 namespace proxy {
@@ -92,10 +93,10 @@ void proxy_stub::remove_session(dsn::rpc_address remote_address)
         ::dsn::zauto_write_lock l(_lock);
         auto iter = _sessions.find(remote_address);
         if (iter == _sessions.end()) {
-            dwarn("%s has been removed from proxy stub", remote_address.to_string());
+            LOG_WARNING("%s has been removed from proxy stub", remote_address.to_string());
             return;
         }
-        ddebug("remove %s from proxy stub", remote_address.to_string());
+        LOG_INFO("remove %s from proxy stub", remote_address.to_string());
         session = std::move(iter->second);
         _sessions.erase(iter);
     }
@@ -105,19 +106,17 @@ void proxy_stub::remove_session(dsn::rpc_address remote_address)
 proxy_session::proxy_session(proxy_stub *op, dsn::message_ex *first_msg)
     : _stub(op), _is_session_reset(false), _backup_one_request(first_msg)
 {
-    dassert(first_msg != nullptr, "null msg when create session");
+    CHECK_NOTNULL(first_msg, "null msg when create session");
     _backup_one_request->add_ref();
 
     _remote_address = _backup_one_request->header->from_address;
-    dassert(_remote_address.type() == HOST_TYPE_IPV4,
-            "invalid rpc_address type, type = %d",
-            (int)_remote_address.type());
+    CHECK_EQ_MSG(_remote_address.type(), HOST_TYPE_IPV4, "invalid rpc_address type");
 }
 
 proxy_session::~proxy_session()
 {
     _backup_one_request->release_ref();
-    ddebug("proxy session %s destroyed", _remote_address.to_string());
+    LOG_INFO("proxy session %s destroyed", _remote_address.to_string());
 }
 
 void proxy_session::on_recv_request(dsn::message_ex *msg)
@@ -131,11 +130,11 @@ void proxy_session::on_recv_request(dsn::message_ex *msg)
     // 2. as "on_recv_request" won't be called concurrently, it's not necessary to call
     //    "parse" with a lock. a subclass may implement a lock inside parse if necessary
     if (!parse(msg)) {
-        derror("%s: got invalid message, try to remove proxy session from proxy stub",
-               _remote_address.to_string());
+        LOG_ERROR("%s: got invalid message, try to remove proxy session from proxy stub",
+                  _remote_address.to_string());
         _stub->remove_session(_remote_address);
 
-        derror("close the rpc session %s", _remote_address.to_string());
+        LOG_ERROR("close the rpc session %s", _remote_address.to_string());
         ((dsn::message_ex *)_backup_one_request)->io_session->close();
     }
 }

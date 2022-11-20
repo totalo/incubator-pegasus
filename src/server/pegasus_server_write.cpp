@@ -17,9 +17,9 @@
  * under the License.
  */
 
-#include <dsn/cpp/message_utils.h>
-#include <dsn/dist/replication/duplication_common.h>
-#include <dsn/utility/defer.h>
+#include "runtime/message_utils.h"
+#include "common//duplication_common.h"
+#include "utils/defer.h"
 
 #include "base/pegasus_key_schema.h"
 #include "pegasus_server_write.h"
@@ -61,14 +61,14 @@ int pegasus_server_write::on_batched_write_requests(dsn::message_ex **requests,
     try {
         auto iter = _non_batch_write_handlers.find(requests[0]->rpc_code());
         if (iter != _non_batch_write_handlers.end()) {
-            dassert_f(count == 1, "count = {}", count);
+            CHECK_EQ(count, 1);
             return iter->second(requests[0]);
         }
     } catch (TTransportException &ex) {
         _pfc_recent_corrupt_write_count->increment();
-        derror_replica("pegasus not batch write handler failed, from = {}, exception = {}",
-                       requests[0]->header->from_address.to_string(),
-                       ex.what());
+        LOG_ERROR_PREFIX("pegasus not batch write handler failed, from = {}, exception = {}",
+                         requests[0]->header->from_address.to_string(),
+                         ex.what());
         return 0;
     }
 
@@ -84,7 +84,7 @@ int pegasus_server_write::on_batched_writes(dsn::message_ex **requests, int coun
         _write_svc->batch_prepare(_decree);
 
         for (int i = 0; i < count; ++i) {
-            dassert(requests[i] != nullptr, "request[%d] is null", i);
+            CHECK_NOTNULL(requests[i], "request[{}] is null", i);
 
             // Make sure all writes are batched even if they are failed,
             // since we need to record the total qps and rpc latencies,
@@ -103,16 +103,16 @@ int pegasus_server_write::on_batched_writes(dsn::message_ex **requests, int coun
                 } else {
                     if (_non_batch_write_handlers.find(rpc_code) !=
                         _non_batch_write_handlers.end()) {
-                        dfatal_f("rpc code not allow batch: {}", rpc_code.to_string());
+                        LOG_FATAL_F("rpc code not allow batch: {}", rpc_code.to_string());
                     } else {
-                        dfatal_f("rpc code not handled: {}", rpc_code.to_string());
+                        LOG_FATAL_F("rpc code not handled: {}", rpc_code.to_string());
                     }
                 }
             } catch (TTransportException &ex) {
                 _pfc_recent_corrupt_write_count->increment();
-                derror_replica("pegasus batch writes handler failed, from = {}, exception = {}",
-                               requests[i]->header->from_address.to_string(),
-                               ex.what());
+                LOG_ERROR_PREFIX("pegasus batch writes handler failed, from = {}, exception = {}",
+                                 requests[i]->header->from_address.to_string(),
+                                 ex.what());
             }
 
             if (!err && local_err) {
@@ -140,22 +140,22 @@ void pegasus_server_write::request_key_check(int64_t decree,
     // TODO(wutao1): server should not assert when client's hash is incorrect.
     if (msg->header->client.partition_hash != 0) {
         uint64_t partition_hash = pegasus_key_hash(key);
-        dassert(msg->header->client.partition_hash == partition_hash,
-                "inconsistent partition hash");
+        CHECK_EQ_MSG(
+            msg->header->client.partition_hash, partition_hash, "inconsistent partition hash");
         int thread_hash = get_gpid().thread_hash();
-        dassert(msg->header->client.thread_hash == thread_hash, "inconsistent thread hash");
+        CHECK_EQ_MSG(msg->header->client.thread_hash, thread_hash, "inconsistent thread hash");
     }
 
     if (_verbose_log) {
         ::dsn::blob hash_key, sort_key;
         pegasus_restore_key(key, hash_key, sort_key);
 
-        ddebug_rocksdb("Write",
-                       "decree: {}, code: {}, hash_key: {}, sort_key: {}",
-                       decree,
-                       msg->local_rpc_code.to_string(),
-                       utils::c_escape_string(hash_key),
-                       utils::c_escape_string(sort_key));
+        LOG_INFO_ROCKSDB("Write",
+                         "decree: {}, code: {}, hash_key: {}, sort_key: {}",
+                         decree,
+                         msg->local_rpc_code.to_string(),
+                         utils::c_escape_string(hash_key),
+                         utils::c_escape_string(sort_key));
     }
 }
 

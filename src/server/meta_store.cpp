@@ -19,8 +19,8 @@
 
 #include "meta_store.h"
 
-#include <dsn/dist/fmt_logging.h>
-#include <dsn/utility/flags.h>
+#include "utils/fmt_logging.h"
+#include "utils/flags.h"
 
 namespace pegasus {
 namespace server {
@@ -43,7 +43,7 @@ uint64_t meta_store::get_last_flushed_decree() const
 {
     uint64_t last_flushed_decree = 0;
     auto ec = get_value_from_meta_cf(true, LAST_FLUSHED_DECREE, &last_flushed_decree);
-    dcheck_eq_replica(::dsn::ERR_OK, ec);
+    CHECK_EQ_PREFIX(::dsn::ERR_OK, ec);
     return last_flushed_decree;
 }
 
@@ -51,7 +51,7 @@ uint32_t meta_store::get_data_version() const
 {
     uint64_t pegasus_data_version = 0;
     auto ec = get_value_from_meta_cf(false, DATA_VERSION, &pegasus_data_version);
-    dcheck_eq_replica(::dsn::ERR_OK, ec);
+    CHECK_EQ_PREFIX(::dsn::ERR_OK, ec);
     return static_cast<uint32_t>(pegasus_data_version);
 }
 
@@ -60,7 +60,7 @@ uint64_t meta_store::get_last_manual_compact_finish_time() const
     uint64_t last_manual_compact_finish_time = 0;
     auto ec = get_value_from_meta_cf(
         false, LAST_MANUAL_COMPACT_FINISH_TIME, &last_manual_compact_finish_time);
-    dcheck_eq_replica(::dsn::ERR_OK, ec);
+    CHECK_EQ_PREFIX(::dsn::ERR_OK, ec);
     return last_manual_compact_finish_time;
 }
 
@@ -69,7 +69,7 @@ uint64_t meta_store::get_decree_from_readonly_db(rocksdb::DB *db,
 {
     uint64_t last_flushed_decree = 0;
     auto ec = get_value_from_meta_cf(db, meta_cf, true, LAST_FLUSHED_DECREE, &last_flushed_decree);
-    dcheck_eq_replica(::dsn::ERR_OK, ec);
+    CHECK_EQ_PREFIX(::dsn::ERR_OK, ec);
     return last_flushed_decree;
 }
 
@@ -78,11 +78,11 @@ std::string meta_store::get_usage_scenario() const
     // If couldn't find rocksdb usage scenario in meta column family, return normal in default.
     std::string usage_scenario = ROCKSDB_ENV_USAGE_SCENARIO_NORMAL;
     auto ec = get_string_value_from_meta_cf(false, ROCKSDB_ENV_USAGE_SCENARIO_KEY, &usage_scenario);
-    dassert_replica(ec == ::dsn::ERR_OK || ec == ::dsn::ERR_OBJECT_NOT_FOUND,
-                    "rocksdb {} get {} from meta column family failed: {}",
-                    _db->GetName(),
-                    ROCKSDB_ENV_USAGE_SCENARIO_KEY,
-                    ec.to_string());
+    CHECK_PREFIX_MSG(ec == ::dsn::ERR_OK || ec == ::dsn::ERR_OBJECT_NOT_FOUND,
+                     "rocksdb {} get {} from meta column family failed: {}",
+                     _db->GetName(),
+                     ROCKSDB_ENV_USAGE_SCENARIO_KEY,
+                     ec);
     return usage_scenario;
 }
 
@@ -104,10 +104,10 @@ std::string meta_store::get_usage_scenario() const
     if (ec != ::dsn::ERR_OK) {
         return ec;
     }
-    dassert_f(dsn::buf2uint64(data, *value),
-              "rocksdb {} get \"{}\" from meta column family failed to parse into uint64",
-              db->GetName(),
-              data);
+    CHECK(dsn::buf2uint64(data, *value),
+          "rocksdb {} get \"{}\" from meta column family failed to parse into uint64",
+          db->GetName(),
+          data);
     return ::dsn::ERR_OK;
 }
 
@@ -152,7 +152,7 @@ std::string meta_store::get_usage_scenario() const
 {
     auto status = _db->Put(_wt_opts, _meta_cf, key, value);
     if (!status.ok()) {
-        derror_replica(
+        LOG_ERROR_PREFIX(
             "Put {}={} to meta column family failed, status {}", key, value, status.ToString());
         // TODO(yingchun): add a rocksdb io error.
         return ::dsn::ERR_LOCAL_APP_FAILURE;
@@ -162,25 +162,25 @@ std::string meta_store::get_usage_scenario() const
 
 void meta_store::set_last_flushed_decree(uint64_t decree) const
 {
-    dcheck_eq_replica(::dsn::ERR_OK, set_value_to_meta_cf(LAST_FLUSHED_DECREE, decree));
+    CHECK_EQ_PREFIX(::dsn::ERR_OK, set_value_to_meta_cf(LAST_FLUSHED_DECREE, decree));
 }
 
 void meta_store::set_data_version(uint32_t version) const
 {
-    dcheck_eq_replica(::dsn::ERR_OK, set_value_to_meta_cf(DATA_VERSION, version));
+    CHECK_EQ_PREFIX(::dsn::ERR_OK, set_value_to_meta_cf(DATA_VERSION, version));
 }
 
 void meta_store::set_last_manual_compact_finish_time(uint64_t last_manual_compact_finish_time) const
 {
-    dcheck_eq_replica(
+    CHECK_EQ_PREFIX(
         ::dsn::ERR_OK,
         set_value_to_meta_cf(LAST_MANUAL_COMPACT_FINISH_TIME, last_manual_compact_finish_time));
 }
 
 void meta_store::set_usage_scenario(const std::string &usage_scenario) const
 {
-    dcheck_eq_replica(::dsn::ERR_OK,
-                      set_string_value_to_meta_cf(ROCKSDB_ENV_USAGE_SCENARIO_KEY, usage_scenario));
+    CHECK_EQ_PREFIX(::dsn::ERR_OK,
+                    set_string_value_to_meta_cf(ROCKSDB_ENV_USAGE_SCENARIO_KEY, usage_scenario));
 }
 
 } // namespace server

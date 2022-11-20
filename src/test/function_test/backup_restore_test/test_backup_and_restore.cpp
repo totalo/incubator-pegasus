@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <dsn/dist/replication/replication_ddl_client.h>
-#include <dsn/service_api_c.h>
-#include <dsn/utility/filesystem.h>
+#include "client/replication_ddl_client.h"
+#include "runtime/api_task.h"
+#include "runtime/api_layer1.h"
+#include "runtime/app_model.h"
+#include "utils/api_utilities.h"
+#include "utils/filesystem.h"
 #include <fmt/format.h>
 #include <gtest/gtest.h>
 #include "include/pegasus/client.h"

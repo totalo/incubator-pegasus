@@ -20,8 +20,8 @@
 #include "available_detector.h"
 
 #include <algorithm>
-#include <dsn/dist/common.h>
-#include <dsn/utils/time_utils.h>
+#include "common/common.h"
+#include "utils/time_utils.h"
 #include <iomanip>
 #include <sstream>
 
@@ -49,12 +49,12 @@ available_detector::available_detector()
     _cluster_name = dsn::get_current_cluster_name();
     _app_name = dsn_config_get_value_string(
         "pegasus.collector", "available_detect_app", "", "available detector app name");
-    dassert(_app_name.size() > 0, "");
+    CHECK(!_app_name.empty(), "");
     _alert_script_dir = dsn_config_get_value_string("pegasus.collector",
                                                     "available_detect_alert_script_dir",
                                                     ".",
                                                     "available detect alert script dir");
-    dassert(_alert_script_dir.size() > 0, "");
+    CHECK(!_alert_script_dir.empty(), "");
     _alert_email_address = dsn_config_get_value_string(
         "pegasus.collector",
         "available_detect_alert_email_address",
@@ -62,7 +62,7 @@ available_detector::available_detector()
         "available detect alert email address, empty means not send email");
     _meta_list.clear();
     dsn::replication::replica_helper::load_meta_servers(_meta_list);
-    dassert(_meta_list.size() > 0, "");
+    CHECK(!_meta_list.empty(), "");
     _detect_interval_seconds =
         (uint32_t)dsn_config_get_value_uint64("pegasus.collector",
                                               "available_detect_interval_seconds",
@@ -79,13 +79,13 @@ available_detector::available_detector()
                                               "available detect timeout");
     // initialize the _client.
     if (!pegasus_client_factory::initialize(nullptr)) {
-        dassert(false, "Initialize the pegasus client failed");
+        CHECK(false, "Initialize the pegasus client failed");
     }
     _client = pegasus_client_factory::get_client(_cluster_name.c_str(), _app_name.c_str());
-    dassert(_client != nullptr, "Initialize the _client failed");
+    CHECK_NOTNULL(_client, "Initialize the _client failed");
     _result_writer = dsn::make_unique<result_writer>(_client);
     _ddl_client.reset(new replication_ddl_client(_meta_list));
-    dassert(_ddl_client != nullptr, "Initialize the _ddl_client failed");
+    CHECK_NOTNULL(_ddl_client, "Initialize the _ddl_client failed");
     if (!_alert_email_address.empty()) {
         _send_alert_email_cmd = "cd " + _alert_script_dir + "; bash sendmail.sh alert " +
                                 _alert_email_address + " " + _cluster_name + " " + _app_name + " ";
@@ -156,7 +156,7 @@ void available_detector::stop() { _tracker.cancel_outstanding_tasks(); }
 void available_detector::detect_available()
 {
     if (!generate_hash_keys()) {
-        derror("initialize hash_keys failed, do not detect available, retry after 60 seconds");
+        LOG_ERROR("initialize hash_keys failed, do not detect available, retry after 60 seconds");
         _detect_timer =
             ::dsn::tasking::enqueue(LPC_DETECT_AVAILABLE,
                                     &_tracker,
@@ -260,9 +260,9 @@ bool available_detector::generate_hash_keys()
         }
         return true;
     } else {
-        dwarn("Get partition count of table '%s' on cluster '%s' failed",
-              _app_name.c_str(),
-              _cluster_name.c_str());
+        LOG_WARNING("Get partition count of table '%s' on cluster '%s' failed",
+                    _app_name.c_str(),
+                    _cluster_name.c_str());
         return false;
     }
 }
@@ -270,27 +270,27 @@ bool available_detector::generate_hash_keys()
 void available_detector::on_detect(int32_t idx)
 {
     if (idx == 0) {
-        ddebug("detecting table[%s] with app_id[%d] and partition_count[%d] on cluster[%s], "
-               "recent_day_detect_times(%" PRId64 "), recent_day_fail_times(%" PRId64 "), "
-               "recent_hour_detect_times(%" PRId64 "), recent_hour_fail_times(%" PRId64 ") "
-               "recent_minute_detect_times(%" PRId64 "), recent_minute_fail_times(%" PRId64 ")",
-               _app_name.c_str(),
-               _app_id,
-               _partition_count,
-               _cluster_name.c_str(),
-               _recent_day_detect_times.load(),
-               _recent_day_fail_times.load(),
-               _recent_hour_detect_times.load(),
-               _recent_hour_fail_times.load(),
-               _recent_minute_detect_times.load(),
-               _recent_minute_fail_times.load());
+        LOG_INFO("detecting table[%s] with app_id[%d] and partition_count[%d] on cluster[%s], "
+                 "recent_day_detect_times(%" PRId64 "), recent_day_fail_times(%" PRId64 "), "
+                 "recent_hour_detect_times(%" PRId64 "), recent_hour_fail_times(%" PRId64 ") "
+                 "recent_minute_detect_times(%" PRId64 "), recent_minute_fail_times(%" PRId64 ")",
+                 _app_name.c_str(),
+                 _app_id,
+                 _partition_count,
+                 _cluster_name.c_str(),
+                 _recent_day_detect_times.load(),
+                 _recent_day_fail_times.load(),
+                 _recent_hour_detect_times.load(),
+                 _recent_hour_fail_times.load(),
+                 _recent_minute_detect_times.load(),
+                 _recent_minute_fail_times.load());
     }
-    dinfo("available_detector begin to detect partition[%d] of table[%s] with id[%d] on the "
-          "cluster[%s]",
-          idx,
-          _app_name.c_str(),
-          _app_id,
-          _cluster_name.c_str());
+    LOG_DEBUG("available_detector begin to detect partition[%d] of table[%s] with id[%d] on the "
+              "cluster[%s]",
+              idx,
+              _app_name.c_str(),
+              _app_id,
+              _cluster_name.c_str());
     auto time = dsn_now_ms();
     std::string value = "detect_value_" + std::to_string((time / 1000));
     _recent_day_detect_times.fetch_add(1);
@@ -298,28 +298,28 @@ void available_detector::on_detect(int32_t idx)
     _recent_minute_detect_times.fetch_add(1);
 
     // define async_get callback function.
-    auto async_get_callback =
-        [this, idx](int err, std::string &&_value, pegasus_client::internal_info &&info) {
-            std::atomic<int> &cnt = (*_fail_count[idx]);
-            if (err != PERR_OK) {
-                int prev = cnt.fetch_add(1);
-                _recent_day_fail_times.fetch_add(1);
-                _recent_hour_fail_times.fetch_add(1);
-                _recent_minute_fail_times.fetch_add(1);
-                derror("async_get partition[%d] fail, fail_count = %d, hash_key = %s, error = %s",
-                       idx,
-                       prev + 1,
-                       _hash_keys[idx].c_str(),
-                       _client->get_error_string(err));
-                check_and_send_email(&cnt, idx);
-            } else {
-                cnt.store(0);
-                dinfo("async_get partition[%d] ok, hash_key = %s, value = %s",
+    auto async_get_callback = [this, idx](
+        int err, std::string &&_value, pegasus_client::internal_info &&info) {
+        std::atomic<int> &cnt = (*_fail_count[idx]);
+        if (err != PERR_OK) {
+            int prev = cnt.fetch_add(1);
+            _recent_day_fail_times.fetch_add(1);
+            _recent_hour_fail_times.fetch_add(1);
+            _recent_minute_fail_times.fetch_add(1);
+            LOG_ERROR("async_get partition[%d] fail, fail_count = %d, hash_key = %s, error = %s",
+                      idx,
+                      prev + 1,
+                      _hash_keys[idx].c_str(),
+                      _client->get_error_string(err));
+            check_and_send_email(&cnt, idx);
+        } else {
+            cnt.store(0);
+            LOG_DEBUG("async_get partition[%d] ok, hash_key = %s, value = %s",
                       idx,
                       _hash_keys[idx].c_str(),
                       _value.c_str());
-            }
-        };
+        }
+    };
 
     // define async_set callback function.
     auto async_set_callback =
@@ -332,14 +332,14 @@ void available_detector::on_detect(int32_t idx)
             _recent_day_fail_times.fetch_add(1);
             _recent_hour_fail_times.fetch_add(1);
             _recent_minute_fail_times.fetch_add(1);
-            derror("async_set partition[%d] fail, fail_count = %d, hash_key = %s , error = %s",
-                   idx,
-                   prev + 1,
-                   _hash_keys[idx].c_str(),
-                   _client->get_error_string(err));
+            LOG_ERROR("async_set partition[%d] fail, fail_count = %d, hash_key = %s , error = %s",
+                      idx,
+                      prev + 1,
+                      _hash_keys[idx].c_str(),
+                      _client->get_error_string(err));
             check_and_send_email(&cnt, idx);
         } else {
-            dinfo("async_set partition[%d] ok, hash_key = %s", idx, _hash_keys[idx].c_str());
+            LOG_DEBUG("async_set partition[%d] ok, hash_key = %s", idx, _hash_keys[idx].c_str());
             _client->async_get(
                 _hash_keys[idx], "", std::move(user_async_get_callback), _detect_timeout);
         }
@@ -362,20 +362,20 @@ void available_detector::check_and_send_email(std::atomic<int> *cnt, int32_t idx
         }
     }
     if (send_email) {
-        ddebug("start to send alert email, partition_index = %d", idx);
+        LOG_INFO("start to send alert email, partition_index = %d", idx);
         if (_send_alert_email_cmd.empty()) {
-            ddebug("ignore sending alert email because email address is not set, "
-                   "partition_index = %d",
-                   idx);
+            LOG_INFO("ignore sending alert email because email address is not set, "
+                     "partition_index = %d",
+                     idx);
         } else {
             int r = system((_send_alert_email_cmd + std::to_string(idx)).c_str());
             if (r == 0) {
-                ddebug("send alert email done, partition_index = %d", idx);
+                LOG_INFO("send alert email done, partition_index = %d", idx);
             } else {
-                derror("send alert email failed, partition_index = %d, "
-                       "command_return = %d",
-                       idx,
-                       r);
+                LOG_ERROR("send alert email failed, partition_index = %d, "
+                          "command_return = %d",
+                          idx,
+                          r);
             }
         }
     }
@@ -383,7 +383,7 @@ void available_detector::check_and_send_email(std::atomic<int> *cnt, int32_t idx
 
 void available_detector::on_day_report()
 {
-    ddebug("start to report on new day, last_day = %s", _old_day.c_str());
+    LOG_INFO("start to report on new day, last_day = %s", _old_day.c_str());
     int64_t detect_times = _recent_day_detect_times.fetch_and(0);
     int64_t fail_times = _recent_day_fail_times.fetch_and(0);
     int64_t succ_times = std::max<int64_t>(0L, detect_times - fail_times);
@@ -402,30 +402,30 @@ void available_detector::on_day_report()
     _pfc_fail_times_day->set(fail_times);
     _pfc_available_day->set(available);
 
-    ddebug("start to send availability email, date = %s", _old_day.c_str());
+    LOG_INFO("start to send availability email, date = %s", _old_day.c_str());
     if (_send_availability_info_email_cmd.empty()) {
-        ddebug("ignore sending availability email because email address is not set, "
-               "date = %s, total_detect_times = %u, total_fail_times = %u",
-               _old_day.c_str(),
-               detect_times,
-               fail_times);
+        LOG_INFO("ignore sending availability email because email address is not set, "
+                 "date = %s, total_detect_times = %u, total_fail_times = %u",
+                 _old_day.c_str(),
+                 detect_times,
+                 fail_times);
     } else {
         int r = system((_send_availability_info_email_cmd + std::to_string(detect_times) + " " +
                         std::to_string(fail_times) + " " + _old_day)
                            .c_str());
         if (r == 0) {
-            ddebug("send availability email done, date = %s, "
-                   "total_detect_times = %u, total_fail_times = %u",
-                   _old_day.c_str(),
-                   detect_times,
-                   fail_times);
+            LOG_INFO("send availability email done, date = %s, "
+                     "total_detect_times = %u, total_fail_times = %u",
+                     _old_day.c_str(),
+                     detect_times,
+                     fail_times);
         } else {
-            derror("send availability email fail, date = %s, "
-                   "total_detect_times = %u, total_fail_times = %u, command_return = %d",
-                   _old_day.c_str(),
-                   detect_times,
-                   fail_times,
-                   r);
+            LOG_ERROR("send availability email fail, date = %s, "
+                      "total_detect_times = %u, total_fail_times = %u, command_return = %d",
+                      _old_day.c_str(),
+                      detect_times,
+                      fail_times,
+                      r);
         }
     }
 
@@ -434,7 +434,7 @@ void available_detector::on_day_report()
 
 void available_detector::on_hour_report()
 {
-    ddebug("start to report on new hour, last_hour = %s", _old_hour.c_str());
+    LOG_INFO("start to report on new hour, last_hour = %s", _old_hour.c_str());
     int64_t detect_times = _recent_hour_detect_times.fetch_and(0);
     int64_t fail_times = _recent_hour_fail_times.fetch_and(0);
     int64_t succ_times = std::max<int64_t>(0L, detect_times - fail_times);
@@ -458,7 +458,7 @@ void available_detector::on_hour_report()
 
 void available_detector::on_minute_report()
 {
-    ddebug("start to report on new minute, last_minute = %s", _old_minute.c_str());
+    LOG_INFO("start to report on new minute, last_minute = %s", _old_minute.c_str());
     int64_t detect_times = _recent_minute_detect_times.fetch_and(0);
     int64_t fail_times = _recent_minute_fail_times.fetch_and(0);
     int64_t succ_times = std::max<int64_t>(0L, detect_times - fail_times);

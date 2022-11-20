@@ -19,9 +19,9 @@
 
 #include "compaction_filter_rule.h"
 
-#include <dsn/dist/fmt_logging.h>
-#include <dsn/utility/string_view.h>
-#include <dsn/c/api_utilities.h>
+#include "utils/fmt_logging.h"
+#include "utils/string_view.h"
+#include "utils/api_utilities.h"
 #include "base/pegasus_utils.h"
 #include "base/pegasus_value_schema.h"
 
@@ -46,7 +46,7 @@ bool string_pattern_match(dsn::string_view value,
                       filter_pattern.data(),
                       filter_pattern.length()) == 0;
     default:
-        derror_f("invalid match type {}", type);
+        LOG_ERROR_F("invalid match type {}", type);
         return false;
     }
 }

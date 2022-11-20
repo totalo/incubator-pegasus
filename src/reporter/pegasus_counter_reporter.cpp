@@ -33,10 +33,10 @@
 #include <event2/http.h>
 #include <event2/keyvalq_struct.h>
 
-#include <dsn/cpp/service_app.h>
-#include <dsn/dist/common.h>
-#include <dsn/dist/fmt_logging.h>
-#include <dsn/utility/flags.h>
+#include "runtime/service_app.h"
+#include "common/common.h"
+#include "utils/fmt_logging.h"
+#include "utils/flags.h"
 
 #include "base/pegasus_utils.h"
 #include "pegasus_io_service.h"
@@ -84,9 +84,9 @@ static void libevent_log(int severity, const char *msg)
 {
     dsn_log_level_t level;
     if (severity == EVENT_LOG_DEBUG)
-        level = LOG_LEVEL_INFORMATION;
-    else if (severity == EVENT_LOG_MSG)
         level = LOG_LEVEL_DEBUG;
+    else if (severity == EVENT_LOG_MSG)
+        level = LOG_LEVEL_INFO;
     else if (severity == EVENT_LOG_WARN)
         level = LOG_LEVEL_WARNING;
     else
@@ -108,7 +108,7 @@ void pegasus_counter_reporter::prometheus_initialize()
         dsn::make_unique<prometheus::Exposer>(fmt::format("0.0.0.0:{}", FLAGS_prometheus_port));
     _exposer->RegisterCollectable(_registry);
 
-    ddebug_f("prometheus exposer [0.0.0.0:{}] started", FLAGS_prometheus_port);
+    LOG_INFO_F("prometheus exposer [0.0.0.0:{}] started", FLAGS_prometheus_port);
 }
 
 void pegasus_counter_reporter::falcon_initialize()
@@ -118,9 +118,9 @@ void pegasus_counter_reporter::falcon_initialize()
     _falcon_metric.tags = fmt::format(
         "service=pegasus,cluster={},job={},port={}", _cluster_name, _app_name, _local_port);
 
-    ddebug("falcon initialize: endpoint(%s), tag(%s)",
-           _falcon_metric.endpoint.c_str(),
-           _falcon_metric.tags.c_str());
+    LOG_INFO("falcon initialize: endpoint(%s), tag(%s)",
+             _falcon_metric.endpoint.c_str(),
+             _falcon_metric.tags.c_str());
 }
 
 void pegasus_counter_reporter::start()
@@ -179,7 +179,7 @@ void pegasus_counter_reporter::stop()
 void pegasus_counter_reporter::update_counters_to_falcon(const std::string &result,
                                                          int64_t timestamp)
 {
-    ddebug("update counters to falcon with timestamp = %" PRId64, timestamp);
+    LOG_INFO("update counters to falcon with timestamp = %" PRId64, timestamp);
     http_post_request(FLAGS_falcon_host,
                       FLAGS_falcon_port,
                       FLAGS_falcon_path,
@@ -203,7 +203,7 @@ void pegasus_counter_reporter::update()
                 oss << "[" << cs.name << ", " << dsn_counter_type_to_string(cs.type) << ", "
                     << cs.value << "]" << std::endl;
             });
-        ddebug("%s", oss.str().c_str());
+        LOG_INFO("%s", oss.str().c_str());
     }
 
     if (perf_counter_sink_t::FALCON == _perf_counter_sink) {
@@ -246,7 +246,7 @@ void pegasus_counter_reporter::update()
             if (lv.size() > 1) {
                 std::list<std::string> lv1;
                 ::dsn::utils::split_args(lv.back().c_str(), lv1, '.');
-                dcheck_le(lv1.size(), 3);
+                CHECK_LE(lv1.size(), 3);
                 int i = 0;
                 for (auto &v : lv1) {
                     app[i] = v;
@@ -292,7 +292,7 @@ void pegasus_counter_reporter::update()
         });
     }
 
-    ddebug("update now_ms(%lld), last_report_time_ms(%lld)", now, _last_report_time_ms);
+    LOG_INFO("update now_ms(%lld), last_report_time_ms(%lld)", now, _last_report_time_ms);
     _last_report_time_ms = now;
 }
 
@@ -302,7 +302,7 @@ void pegasus_counter_reporter::http_post_request(const std::string &host,
                                                  const std::string &contentType,
                                                  const std::string &data)
 {
-    dinfo("start update_request, %s", data.c_str());
+    LOG_DEBUG("start update_request, %s", data.c_str());
     struct event_base *base = event_base_new();
     struct evhttp_connection *conn = evhttp_connection_base_new(base, nullptr, host.c_str(), port);
     struct evhttp_request *req =
@@ -325,21 +325,21 @@ void pegasus_counter_reporter::http_request_done(struct evhttp_request *req, voi
 {
     struct event_base *event = (struct event_base *)arg;
     if (req == nullptr) {
-        derror("http post request failed: unknown reason");
+        LOG_ERROR("http post request failed: unknown reason");
     } else if (req->response_code == 0) {
-        derror("http post request failed: connection refused");
+        LOG_ERROR("http post request failed: connection refused");
     } else if (req->response_code == HTTP_OK) {
-        dinfo("http post request succeed");
+        LOG_DEBUG("http post request succeed");
     } else {
         struct evbuffer *buf = evhttp_request_get_input_buffer(req);
         size_t len = evbuffer_get_length(buf);
         char *tmp = (char *)alloca(len + 1);
         memcpy(tmp, evbuffer_pullup(buf, -1), len);
         tmp[len] = '\0';
-        derror("http post request failed: code = %u, code_line = %s, input_buffer = %s",
-               req->response_code,
-               req->response_code_line,
-               tmp);
+        LOG_ERROR("http post request failed: code = %u, code_line = %s, input_buffer = %s",
+                  req->response_code,
+                  req->response_code_line,
+                  tmp);
     }
     event_base_loopexit(event, 0);
 }
@@ -355,7 +355,7 @@ void pegasus_counter_reporter::on_report_timer(std::shared_ptr<boost::asio::dead
         timer->async_wait(std::bind(
             &pegasus_counter_reporter::on_report_timer, this, timer, std::placeholders::_1));
     } else if (boost::system::errc::operation_canceled != ec) {
-        dassert(false, "pegasus report timer error!!!");
+        CHECK(false, "pegasus report timer error!!!");
     }
 }
 } // namespace server

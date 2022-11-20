@@ -22,9 +22,12 @@
 #include <vector>
 #include <map>
 
-#include <dsn/dist/fmt_logging.h>
-#include <dsn/dist/replication/replication_ddl_client.h>
-#include <dsn/service_api_c.h>
+#include "utils/fmt_logging.h"
+#include "client/replication_ddl_client.h"
+#include "runtime/api_task.h"
+#include "runtime/api_layer1.h"
+#include "runtime/app_model.h"
+#include "utils/api_utilities.h"
 #include <gtest/gtest.h>
 #include "include/pegasus/client.h"
 #include <unistd.h>
@@ -162,14 +165,14 @@ const char copy_data_test::CCH[] =
 
 TEST_F(copy_data_test, EMPTY_HASH_KEY_COPY)
 {
-    ddebug_f("TESTING_COPY_DATA, EMPTY HASH_KEY COPY ....");
+    LOG_INFO_F("TESTING_COPY_DATA, EMPTY HASH_KEY COPY ....");
 
     pegasus_client::scan_options options;
     options.return_expire_ts = true;
     vector<pegasus::pegasus_client::pegasus_scanner *> raw_scanners;
     ASSERT_EQ(PERR_OK, srouce_client_->get_unordered_scanners(INT_MAX, options, raw_scanners));
 
-    ddebug_f("open source app scanner succeed, partition_count = {}", raw_scanners.size());
+    LOG_INFO_F("open source app scanner succeed, partition_count = {}", raw_scanners.size());
 
     vector<pegasus::pegasus_client::pegasus_scanner_wrapper> scanners;
     for (auto raw_scanner : raw_scanners) {
@@ -179,7 +182,7 @@ TEST_F(copy_data_test, EMPTY_HASH_KEY_COPY)
     raw_scanners.clear();
 
     int split_count = scanners.size();
-    ddebug_f("prepare scanners succeed, split_count = {}", split_count);
+    LOG_INFO_F("prepare scanners succeed, split_count = {}", split_count);
 
     std::atomic_bool error_occurred(false);
     vector<std::unique_ptr<scan_data_context>> contexts;

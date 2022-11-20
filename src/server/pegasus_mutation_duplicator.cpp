@@ -21,8 +21,8 @@
 #include "pegasus_server_impl.h"
 #include "base/pegasus_rpc_types.h"
 
-#include <dsn/cpp/message_utils.h>
-#include <dsn/utility/chrono_literals.h>
+#include "runtime/message_utils.h"
+#include "utils/chrono_literals.h"
 #include <rrdb/rrdb.client.h>
 
 namespace dsn {
@@ -65,7 +65,7 @@ using namespace dsn::literals::chrono_literals;
         dsn::from_blob_to_thrift(data, thrift_request);
         return pegasus_hash_key_hash(thrift_request.hash_key);
     }
-    dfatal("unexpected task code: %s", tc.to_string());
+    LOG_FATAL("unexpected task code: %s", tc.to_string());
     __builtin_unreachable();
 }
 
@@ -81,23 +81,21 @@ pegasus_mutation_duplicator::pegasus_mutation_duplicator(dsn::replication::repli
     _client = static_cast<client::pegasus_client_impl *>(client);
 
     auto ret = dsn::replication::get_duplication_cluster_id(remote_cluster.data());
-    dassert_replica(ret.is_ok(), // never possible, meta server disallows such remote_cluster.
-                    "invalid remote cluster: {}, err_ret: {}",
-                    remote_cluster,
-                    ret.get_error());
+    CHECK_PREFIX_MSG(ret.is_ok(), // never possible, meta server disallows such remote_cluster.
+                     "invalid remote cluster: {}, err_ret: {}",
+                     remote_cluster,
+                     ret.get_error());
     _remote_cluster_id = static_cast<uint8_t>(ret.get_value());
 
-    ddebug_replica("initialize mutation duplicator for local cluster [id:{}], "
-                   "remote cluster [id:{}, addr:{}]",
-                   get_current_cluster_id(),
-                   _remote_cluster_id,
-                   remote_cluster);
+    LOG_INFO_PREFIX("initialize mutation duplicator for local cluster [id:{}], "
+                    "remote cluster [id:{}, addr:{}]",
+                    get_current_cluster_id(),
+                    _remote_cluster_id,
+                    remote_cluster);
 
     // never possible to duplicate data to itself
-    dassert_replica(get_current_cluster_id() != _remote_cluster_id,
-                    "invalid remote cluster: {} {}",
-                    remote_cluster,
-                    _remote_cluster_id);
+    CHECK_NE_PREFIX_MSG(
+        get_current_cluster_id(), _remote_cluster_id, "invalid remote cluster: {}", remote_cluster);
 
     std::string str_gpid = fmt::format("{}", get_gpid());
     _shipped_ops.init_app_counter("app.pegasus",
@@ -145,12 +143,12 @@ void pegasus_mutation_duplicator::on_duplicate_reply(uint64_t hash,
         // errors are acceptable.
         // TODO(wutao1): print the entire request for future debugging.
         if (dsn::rand::next_double01() <= 0.01) {
-            derror_replica("duplicate_rpc failed: {} [size:{}]",
-                           err == dsn::ERR_OK ? _client->get_error_string(perr) : err.to_string(),
-                           rpc.request().entries.size());
+            LOG_ERROR_PREFIX("duplicate_rpc failed: {} [size:{}]",
+                             err == dsn::ERR_OK ? _client->get_error_string(perr) : err.to_string(),
+                             rpc.request().entries.size());
         }
         // duplicating an illegal write to server is unacceptable, fail fast.
-        dassert_replica(perr != PERR_INVALID_ARGUMENT, rpc.response().error_hint);
+        CHECK_NE_PREFIX_MSG(perr, PERR_INVALID_ARGUMENT, rpc.response().error_hint);
     } else {
         _shipped_ops->increment();
         _total_shipped_size +=

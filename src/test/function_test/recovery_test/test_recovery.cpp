@@ -27,9 +27,12 @@
 #include <fmt/ostream.h>
 #include <gtest/gtest.h>
 
-#include <dsn/service_api_c.h>
-#include <dsn/dist/replication/replication_ddl_client.h>
-#include <dsn/utility/rand.h>
+#include "runtime/api_task.h"
+#include "runtime/api_layer1.h"
+#include "runtime/app_model.h"
+#include "utils/api_utilities.h"
+#include "client/replication_ddl_client.h"
+#include "utils/rand.h"
 
 #include "include/pegasus/client.h"
 

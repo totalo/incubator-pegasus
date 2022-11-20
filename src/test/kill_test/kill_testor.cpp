@@ -19,9 +19,21 @@
 
 #include <list>
 
-#include <dsn/c/api_utilities.h>
-#include <dsn/service_api_cpp.h>
-#include <dsn/dist/replication/replication_ddl_client.h>
+#include "utils/api_utilities.h"
+#include "runtime/api_task.h"
+#include "runtime/api_layer1.h"
+#include "runtime/app_model.h"
+#include "utils/api_utilities.h"
+#include "utils/error_code.h"
+#include "utils/threadpool_code.h"
+#include "runtime/task/task_code.h"
+#include "common/gpid.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/rpc/rpc_stream.h"
+#include "runtime/serverlet.h"
+#include "runtime/service_app.h"
+#include "utils/rpc_address.h"
+#include "client/replication_ddl_client.h"
 #include <pegasus/client.h>
 
 #include "base/pegasus_const.h"
@@ -45,7 +57,7 @@ kill_testor::kill_testor(const char *config_file)
     pegasus_cluster_name =
         dsn_config_get_value_string(section, "pegasus_cluster_name", "", "pegasus cluster name");
     if (pegasus_cluster_name.empty()) {
-        derror("Should config the cluster name for killer");
+        LOG_ERROR("Should config the cluster name for killer");
         exit(-1);
     }
 
@@ -54,13 +66,13 @@ kill_testor::kill_testor(const char *config_file)
     dsn::replication::replica_helper::load_meta_servers(
         meta_list, PEGASUS_CLUSTER_SECTION_NAME.c_str(), pegasus_cluster_name.c_str());
     if (meta_list.empty()) {
-        derror("Should config the meta address for killer");
+        LOG_ERROR("Should config the meta address for killer");
         exit(-1);
     }
 
     ddl_client.reset(new replication_ddl_client(meta_list));
     if (ddl_client == nullptr) {
-        derror("Initialize the _ddl_client failed");
+        LOG_ERROR("Initialize the _ddl_client failed");
         exit(-1);
     }
 
@@ -109,7 +121,7 @@ dsn::error_code kill_testor::get_partition_info(bool debug_unhealthy,
     dsn::error_code err = ddl_client->list_app(app_name, app_id, partition_count, partitions);
 
     if (err == ::dsn::ERR_OK) {
-        dinfo("access meta and query partition status success");
+        LOG_DEBUG("access meta and query partition status success");
         for (int i = 0; i < partitions.size(); i++) {
             const dsn::partition_configuration &p = partitions[i];
             int replica_count = 0;
@@ -133,15 +145,15 @@ dsn::error_code kill_testor::get_partition_info(bool debug_unhealthy,
                 info << "], ";
                 info << "last_committed_decree=" << p.last_committed_decree;
                 if (debug_unhealthy) {
-                    ddebug("found unhealthy partition, %s", info.str().c_str());
+                    LOG_INFO("found unhealthy partition, %s", info.str().c_str());
                 } else {
-                    dinfo("found unhealthy partition, %s", info.str().c_str());
+                    LOG_DEBUG("found unhealthy partition, %s", info.str().c_str());
                 }
             }
         }
         unhealthy_partition_cnt = partition_count - healthy_partition_cnt;
     } else {
-        dinfo("access meta and query partition status fail");
+        LOG_DEBUG("access meta and query partition status fail");
         healthy_partition_cnt = 0;
         unhealthy_partition_cnt = 0;
     }
@@ -160,15 +172,15 @@ bool kill_testor::check_cluster_status()
                                                  unhealthy_partition_cnt);
         if (err == dsn::ERR_OK) {
             if (unhealthy_partition_cnt > 0) {
-                dinfo("query partition status success, but still have unhealthy partition, "
-                      "healthy_partition_count = %d, unhealthy_partition_count = %d",
-                      healthy_partition_cnt,
-                      unhealthy_partition_cnt);
+                LOG_DEBUG("query partition status success, but still have unhealthy partition, "
+                          "healthy_partition_count = %d, unhealthy_partition_count = %d",
+                          healthy_partition_cnt,
+                          unhealthy_partition_cnt);
                 sleep(1);
             } else
                 return true;
         } else {
-            ddebug("query partition status fail, try times = %d", try_count);
+            LOG_INFO("query partition status fail, try times = %d", try_count);
             sleep(1);
         }
         try_count += 1;

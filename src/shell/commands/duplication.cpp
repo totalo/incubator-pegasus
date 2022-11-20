@@ -21,10 +21,10 @@
 #include "shell/argh.h"
 
 #include <fmt/ostream.h>
-#include <dsn/utility/errors.h>
-#include <dsn/utility/output_utils.h>
-#include <dsn/utility/string_conv.h>
-#include <dsn/dist/replication/duplication_common.h>
+#include "utils/errors.h"
+#include "utils/output_utils.h"
+#include "utils/string_conv.h"
+#include "common//duplication_common.h"
 
 using dsn::replication::dupid_t;
 using dsn::replication::duplication_status;
@@ -216,7 +216,7 @@ bool change_dup_status(command_executor *e,
         operation = "removing duplication";
         break;
     default:
-        dfatal("can't change duplication under status %d", status);
+        LOG_FATAL("can't change duplication under status %d", status);
     }
 
     auto err_resp = sc->ddl_client->change_dup_status(app_name, dup_id, status);

@@ -19,10 +19,10 @@
 
 #pragma once
 
-#include <dsn/c/api_utilities.h>
-#include <dsn/dist/fmt_logging.h>
-#include <dsn/utility/rand.h>
-#include <dsn/utility/strings.h>
+#include "utils/api_utilities.h"
+#include "utils/fmt_logging.h"
+#include "utils/rand.h"
+#include "utils/strings.h"
 
 #define RETRY_OPERATION(CLIENT_FUNCTION, RESULT)                                                   \
     do {                                                                                           \
@@ -74,7 +74,7 @@ generate_sortkey_value_map(const std::vector<std::string> sortkeys,
                            const std::vector<std::string> values)
 {
     std::map<std::string, std::string> result;
-    dcheck_eq(sortkeys.size(), values.size());
+    CHECK_EQ(sortkeys.size(), values.size());
     int len = sortkeys.size();
     for (int i = 0; i < len; i++) {
         result.emplace(std::make_pair(sortkeys[i], values[i]));
