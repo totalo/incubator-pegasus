@@ -24,6 +24,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -33,19 +34,21 @@
 
 #include <boost/asio/deadline_timer.hpp>
 
-#include "api_utilities.h"
-#include "alloc.h"
-#include "autoref_ptr.h"
-#include "casts.h"
 #include "common/json_helper.h"
-#include "enum_helper.h"
-#include "fmt_logging.h"
-#include "long_adder.h"
-#include "nth_element.h"
-#include "ports.h"
-#include "singleton.h"
-#include "string_view.h"
-#include "synchronize.h"
+#include "http/http_server.h"
+#include "utils/api_utilities.h"
+#include "utils/alloc.h"
+#include "utils/autoref_ptr.h"
+#include "utils/casts.h"
+#include "utils/enum_helper.h"
+#include "utils/fmt_logging.h"
+#include "utils/long_adder.h"
+#include "utils/nth_element.h"
+#include "utils/ports.h"
+#include "utils/singleton.h"
+#include "utils/string_view.h"
+#include "utils/strings.h"
+#include "utils/synchronize.h"
 
 // A metric library (for details pls see https://github.com/apache/incubator-pegasus/issues/922)
 // inspired by Kudu metrics (https://github.com/apache/kudu/blob/master/src/kudu/util/metrics.h).
@@ -132,32 +135,18 @@
 
 namespace dsn {
 
-using metric_fields_type = std::unordered_set<std::string>;
-
-// This struct includes a set of filters for both entities and metrics requested by client.
-struct metric_filters
-{
-    // According to the parameters requested by client, this function will filter metric
-    // fields that will be put in the response.
-    bool include_metric_field(const std::string &field_name) const
-    {
-        // NOTICE: empty `with_metric_fields` means every field is required by client.
-        if (with_metric_fields.empty()) {
-            return true;
-        }
-
-        return with_metric_fields.find(field_name) != with_metric_fields.end();
-    }
-
-    // `with_metric_fields` includes all the metric fields that are wanted by client. If it
-    // is empty, there will be no restriction: in other words, all fields owned by the metric
-    // will be put in the response.
-    metric_fields_type with_metric_fields;
-};
-
 class metric_prototype;
 class metric;
 using metric_ptr = ref_ptr<metric>;
+struct metric_filters;
+class metric_entity_prototype;
+
+using metric_json_writer = dsn::json::PrettyJsonWriter;
+
+const std::string kMetricEntityTypeField = "type";
+const std::string kMetricEntityIdField = "id";
+const std::string kMetricEntityAttrsField = "attributes";
+const std::string kMetricEntityMetricsField = "metrics";
 
 class metric_entity : public ref_counter
 {
@@ -165,34 +154,28 @@ public:
     using attr_map = std::unordered_map<std::string, std::string>;
     using metric_map = std::unordered_map<const metric_prototype *, metric_ptr>;
 
+    const metric_entity_prototype *prototype() const { return _prototype; }
+
     const std::string &id() const { return _id; }
 
     attr_map attributes() const;
 
     metric_map metrics() const;
 
-    // args are the parameters that are used to construct the object of MetricType
+    // `args` are the parameters that are used to construct the object of MetricType.
     template <typename MetricType, typename... Args>
-    ref_ptr<MetricType> find_or_create(const metric_prototype *prototype, Args &&... args)
-    {
-        utils::auto_write_lock l(_lock);
+    ref_ptr<MetricType> find_or_create(const metric_prototype *prototype, Args &&... args);
 
-        metric_map::const_iterator iter = _metrics.find(prototype);
-        if (iter != _metrics.end()) {
-            auto raw_ptr = down_cast<MetricType *>(iter->second.get());
-            return raw_ptr;
-        }
-
-        ref_ptr<MetricType> ptr(new MetricType(prototype, std::forward<Args>(args)...));
-        _metrics[prototype] = ptr;
-        return ptr;
-    }
+    void take_snapshot(metric_json_writer &writer, const metric_filters &filters) const;
 
 private:
     friend class metric_registry;
     friend class ref_ptr<metric_entity>;
+    friend class scoped_entity;
 
-    metric_entity(const std::string &id, attr_map &&attrs);
+    metric_entity(const metric_entity_prototype *prototype,
+                  const std::string &id,
+                  const attr_map &attrs);
 
     ~metric_entity();
 
@@ -209,18 +192,146 @@ private:
     };
     void close(close_option option);
 
-    void set_attributes(attr_map &&attrs);
+    void set_attributes(const attr_map &attrs);
 
+    void encode_type(metric_json_writer &writer) const;
+
+    void encode_id(metric_json_writer &writer) const;
+
+    // Decide if an entity is stale. An entity becomes stale if it is no longer used by any other
+    // object.
+    //
+    // An entity could be bound to one or multiple objects. Once all of these objects are
+    // destroyed, this entity will become stale, which means all of the metrics held by this
+    // entity are also stale.
+    //
+    // For example, once a replica is removed, the replica entity (and all metrics it holds) will
+    // become stale; then, this entity is scheduled to be retired after a configurable retention
+    // interval; finally, this entity will be removed from the registry with all metrics it holds.
+    bool is_stale() const;
+
+    const metric_entity_prototype *const _prototype;
     const std::string _id;
 
     mutable utils::rw_lock_nr _lock;
     attr_map _attrs;
     metric_map _metrics;
 
+    // The timestamp when this entity should be retired:
+    // * default value is 0, which means this entity has not been scheduled to be retired;
+    // * otherwise, non-zero value means this entity has been scheduled to be retired, and will
+    // be retired at any time once current time has reached or exceeded this timestamp.
+    uint64_t _retire_time_ms;
+
     DISALLOW_COPY_AND_ASSIGN(metric_entity);
 };
 
 using metric_entity_ptr = ref_ptr<metric_entity>;
+
+// This struct includes a set of filters for both entities and metrics requested by client.
+struct metric_filters
+{
+    using metric_fields_type = std::unordered_set<std::string>;
+    using entity_types_type = std::vector<std::string>;
+    using entity_ids_type = std::unordered_set<std::string>;
+    using entity_attrs_type = std::vector<std::string>;
+    using entity_metrics_type = std::vector<std::string>;
+
+// NOTICE: empty `white_list` means every field is required by client.
+#define RETURN_MATCHED_WITH_EMPTY_WHITE_LIST(white_list)                                           \
+    do {                                                                                           \
+        if (white_list.empty()) {                                                                  \
+            return true;                                                                           \
+        }                                                                                          \
+    } while (0)
+
+#define DEFINE_SIMPLE_MATCHER(name)                                                                \
+    template <typename T>                                                                          \
+    inline bool match_##name(const T &candidate) const                                             \
+    {                                                                                              \
+        return match(candidate, name##s);                                                          \
+    }
+
+    static inline bool match(const char *candidate, const std::vector<std::string> &white_list)
+    {
+        RETURN_MATCHED_WITH_EMPTY_WHITE_LIST(white_list);
+        // Will use `bool operator==(const string &lhs, const char *rhs);` to compare each element
+        // in `white_list` with `candidate`.
+        return std::find(white_list.begin(), white_list.end(), candidate) != white_list.end();
+    }
+
+    static inline bool match(const std::string &candidate,
+                             const std::unordered_set<std::string> &white_list)
+    {
+        RETURN_MATCHED_WITH_EMPTY_WHITE_LIST(white_list);
+        return white_list.find(candidate) != white_list.end();
+    }
+
+    // According to the parameters requested by client, this function will filter metric
+    // fields that will be put in the response.
+    DEFINE_SIMPLE_MATCHER(with_metric_field)
+
+    DEFINE_SIMPLE_MATCHER(entity_type)
+
+    DEFINE_SIMPLE_MATCHER(entity_id)
+
+    bool match_entity_attrs(const metric_entity::attr_map &candidates) const
+    {
+        RETURN_MATCHED_WITH_EMPTY_WHITE_LIST(entity_attrs);
+
+        // The size of container must be divisible by 2, since attribute name always pairs
+        // with value in it.
+        CHECK_EQ(entity_attrs.size() & 1, 0);
+
+        for (entity_attrs_type::size_type i = 0; i < entity_attrs.size(); i += 2) {
+            const auto &iter = candidates.find(entity_attrs[i]);
+            if (iter == candidates.end()) {
+                continue;
+            }
+            if (iter->second == entity_attrs[i + 1]) {
+                // It will be considered as matched once any attribute is matched
+                // for both name and value.
+                return true;
+            }
+        }
+        return false;
+    }
+
+#undef DEFINE_SIMPLE_MATCHER
+#undef RETURN_MATCHED_WITH_EMPTY_WHITE_LIST
+
+    void extract_entity_metrics(const metric_entity::metric_map &candidates,
+                                metric_entity::metric_map &target_metrics) const;
+
+    // `with_metric_fields` includes all the metric fields that are wanted by client. If it
+    // is empty, there will be no restriction: in other words, all fields owned by the metric
+    // will be put in the response.
+    metric_fields_type with_metric_fields;
+
+    entity_types_type entity_types;
+
+    entity_ids_type entity_ids;
+
+    entity_attrs_type entity_attrs;
+
+    entity_metrics_type entity_metrics;
+};
+
+inline std::string encode_as_json(std::function<void(metric_json_writer &)> encoder)
+{
+    std::ostringstream out;
+    rapidjson::OStreamWrapper wrapper(out);
+    metric_json_writer writer(wrapper);
+    encoder(writer);
+    return out.str();
+}
+
+template <typename T>
+inline std::string take_snapshot_as_json(T *m, const metric_filters &filters)
+{
+    return encode_as_json(
+        [m, &filters](metric_json_writer &writer) { m->take_snapshot(writer, filters); });
+}
 
 class metric_entity_prototype
 {
@@ -231,7 +342,8 @@ public:
     const char *name() const { return _name; }
 
     // Create an entity with the given ID and attributes, if any.
-    metric_entity_ptr instantiate(const std::string &id, metric_entity::attr_map attrs) const;
+    metric_entity_ptr instantiate(const std::string &id,
+                                  const metric_entity::attr_map &attrs) const;
     metric_entity_ptr instantiate(const std::string &id) const;
 
 private:
@@ -240,24 +352,169 @@ private:
     DISALLOW_COPY_AND_ASSIGN(metric_entity_prototype);
 };
 
+class metric_registry;
+class metrics_http_service : public http_server_base
+{
+public:
+    explicit metrics_http_service(metric_registry *registry);
+    ~metrics_http_service() = default;
+
+    // There is only one API now whose URI is "/metrics", thus just make
+    // this URI as sub path while leaving the root path empty.
+    std::string path() const override { return ""; }
+
+private:
+    friend void test_get_metrics_handler(const http_request &req, http_response &resp);
+
+    void get_metrics_handler(const http_request &req, http_response &resp);
+
+    metric_registry *_registry;
+
+    DISALLOW_COPY_AND_ASSIGN(metrics_http_service);
+};
+
+// `metric_timer` is a timer class that runs metric-related computations periodically, such as
+// calculating percentile, checking if there are stale entities. It accepts `on_exec` and
+// `on_close` as the callbacks for execution and close.
+//
+// In case that all metrics (such as percentiles) are computed at the same time and lead to very
+// high load, first calculation will be delayed at a random interval.
+class metric_timer
+{
+public:
+    enum class state : int
+    {
+        kRunning,
+        kClosing,
+        kClosed,
+    };
+
+    using on_exec_fn = std::function<void()>;
+    using on_close_fn = std::function<void()>;
+
+    metric_timer(uint64_t interval_ms, on_exec_fn on_exec, on_close_fn on_close);
+    ~metric_timer() = default;
+
+    void close();
+    void wait();
+
+    // Get the initial delay that is randomly generated by `generate_initial_delay_ms()`.
+    uint64_t get_initial_delay_ms() const { return _initial_delay_ms; }
+
+private:
+    // Generate an initial delay randomly in case that all percentiles are computed at the
+    // same time.
+    static uint64_t generate_initial_delay_ms(uint64_t interval_ms);
+
+    void on_close();
+
+    void on_timer(const boost::system::error_code &ec);
+
+    const uint64_t _initial_delay_ms;
+    const uint64_t _interval_ms;
+    const on_exec_fn _on_exec;
+    const on_close_fn _on_close;
+    std::atomic<state> _state;
+    utils::notify_event _completed;
+    std::unique_ptr<boost::asio::deadline_timer> _timer;
+
+    DISALLOW_COPY_AND_ASSIGN(metric_timer);
+};
+
 class metric_registry : public utils::singleton<metric_registry>
 {
 public:
     using entity_map = std::unordered_map<std::string, metric_entity_ptr>;
+    using collected_entity_list = std::unordered_set<std::string>;
+
+    struct collected_entities_info
+    {
+        // The collected entities that will be processed by retire_stale_entities(). Following
+        // kinds of entities will be collected:
+        // * entities that should be retired immediately. The entities that are still within
+        // the retention interval will not be collected.
+        // * entities that were previously considered stale however have already been reemployed,
+        // which means its retirement should be cancelled by retire_stale_entities().
+        collected_entity_list collected_entities;
+
+        // The number of all entities in the registry.
+        size_t num_all_entities = 0;
+
+        // The number of the entities that have been scheduled to be retired.
+        size_t num_scheduled_entities = 0;
+
+        collected_entities_info() = default;
+    };
+
+    struct retired_entities_stat
+    {
+        // The number of retired entities.
+        size_t num_retired_entities = 0;
+
+        // The number of entities that were recently considered stale and scheduled to be
+        // retired.
+        size_t num_recently_scheduled_entities = 0;
+
+        // The number of the entities that had previously been scheduled to be retired and
+        // were recently reemployed.
+        size_t num_reemployed_entities = 0;
+
+        retired_entities_stat() = default;
+    };
 
     entity_map entities() const;
+
+    void take_snapshot(metric_json_writer &writer, const metric_filters &filters) const;
 
 private:
     friend class metric_entity_prototype;
     friend class utils::singleton<metric_registry>;
 
+    friend void test_get_metrics_handler(const http_request &req, http_response &resp);
+    friend class scoped_entity;
+    friend class MetricsRetirementTest;
+
     metric_registry();
     ~metric_registry();
 
-    metric_entity_ptr find_or_create_entity(const std::string &id, metric_entity::attr_map &&attrs);
+    void on_close();
+
+    void start_timer();
+    void stop_timer();
+
+    metric_entity_ptr find_or_create_entity(const metric_entity_prototype *prototype,
+                                            const std::string &id,
+                                            const metric_entity::attr_map &attrs);
+
+    // These functions are used to retire stale entities.
+    //
+    // Since retirement is infrequent, there tend to be no entity that should be retired.
+    // Therefore, the whole retirement process is divided into two phases: "collect" and
+    // "retire".
+    //
+    // At the first phase "collect", we just check if there are entities that:
+    // * has become stale, but has not been scheduled to be retired, or
+    // * should be retired immediately, or
+    // * previously were scheduled to be retired, now has been reemployed.
+    //
+    // All operations in the first phase are read-only, needing just read lock which is more
+    // lightweight. If some entities were found following above conditions, albeit infrequenly,
+    // they would be collected to be processed at the next phase.
+    //
+    // Collected entities, if any, will be processed at the second phase "retire":
+    // * stale entities will be schedule to be retired;
+    // * the expired entities will be retired;
+    // * reset the retirement timestamp to 0 for reemployed entities.
+    collected_entities_info collect_stale_entities() const;
+    retired_entities_stat retire_stale_entities(const collected_entity_list &collected_entities);
+    void process_stale_entities();
 
     mutable utils::rw_lock_nr _lock;
     entity_map _entities;
+
+    metrics_http_service _http_service;
+
+    std::unique_ptr<metric_timer> _timer;
 
     DISALLOW_COPY_AND_ASSIGN(metric_registry);
 };
@@ -356,6 +613,32 @@ private:
     DISALLOW_COPY_AND_ASSIGN(metric_prototype_with);
 };
 
+template <typename MetricType, typename... Args>
+ref_ptr<MetricType> metric_entity::find_or_create(const metric_prototype *prototype,
+                                                  Args &&... args)
+{
+    CHECK_STREQ_MSG(prototype->entity_type().data(),
+                    _prototype->name(),
+                    "the entity type '{}' of the metric '{}' is inconsistent with the prototype "
+                    "'{}' of the attached entity '{}'",
+                    prototype->entity_type().data(),
+                    prototype->name().data(),
+                    _prototype->name(),
+                    _id);
+
+    utils::auto_write_lock l(_lock);
+
+    metric_map::const_iterator iter = _metrics.find(prototype);
+    if (iter != _metrics.end()) {
+        auto raw_ptr = down_cast<MetricType *>(iter->second.get());
+        return raw_ptr;
+    }
+
+    ref_ptr<MetricType> ptr(new MetricType(prototype, std::forward<Args>(args)...));
+    _metrics[prototype] = ptr;
+    return ptr;
+}
+
 const std::string kMetricTypeField = "type";
 const std::string kMetricNameField = "name";
 const std::string kMetricUnitField = "unit";
@@ -378,7 +661,7 @@ public:
 
     // Take snapshot of each metric to collect current values as json format with fields chosen
     // by `filters`.
-    virtual void take_snapshot(dsn::json::JsonWriter &writer, const metric_filters &filters) = 0;
+    virtual void take_snapshot(metric_json_writer &writer, const metric_filters &filters) = 0;
 
 protected:
     explicit metric(const metric_prototype *prototype);
@@ -387,12 +670,12 @@ protected:
     // Encode a metric field specified by `field_name` as json format. However, once the field
     // are not chosen by `filters`, this function will do nothing.
     template <typename T>
-    inline void encode(dsn::json::JsonWriter &writer,
-                       const std::string &field_name,
-                       const T &value,
-                       const metric_filters &filters) const
+    static inline void encode(metric_json_writer &writer,
+                              const std::string &field_name,
+                              const T &value,
+                              const metric_filters &filters)
     {
-        if (!filters.include_metric_field(field_name)) {
+        if (!filters.match_with_metric_field(field_name)) {
             return;
         }
 
@@ -401,31 +684,31 @@ protected:
     }
 
     // Encode the metric type as json format, if it is chosen by `filters`.
-    inline void encode_type(dsn::json::JsonWriter &writer, const metric_filters &filters) const
+    inline void encode_type(metric_json_writer &writer, const metric_filters &filters) const
     {
         encode(writer, kMetricTypeField, enum_to_string(prototype()->type()), filters);
     }
 
     // Encode the metric name as json format, if it is chosen by `filters`.
-    inline void encode_name(dsn::json::JsonWriter &writer, const metric_filters &filters) const
+    inline void encode_name(metric_json_writer &writer, const metric_filters &filters) const
     {
         encode(writer, kMetricNameField, prototype()->name().data(), filters);
     }
 
     // Encode the metric unit as json format, if it is chosen by `filters`.
-    inline void encode_unit(dsn::json::JsonWriter &writer, const metric_filters &filters) const
+    inline void encode_unit(metric_json_writer &writer, const metric_filters &filters) const
     {
         encode(writer, kMetricUnitField, enum_to_string(prototype()->unit()), filters);
     }
 
     // Encode the metric description as json format, if it is chosen by `filters`.
-    inline void encode_desc(dsn::json::JsonWriter &writer, const metric_filters &filters) const
+    inline void encode_desc(metric_json_writer &writer, const metric_filters &filters) const
     {
         encode(writer, kMetricDescField, prototype()->description().data(), filters);
     }
 
     // Encode the metric prototype as json format, if some attributes in it are chosen by `filters`.
-    inline void encode_prototype(dsn::json::JsonWriter &writer, const metric_filters &filters) const
+    inline void encode_prototype(metric_json_writer &writer, const metric_filters &filters) const
     {
         encode_type(writer, filters);
         encode_name(writer, filters);
@@ -436,9 +719,8 @@ protected:
     // Encode the unique value of a metric as json format, if it is chosen by `filters`. Notice
     // that the metric should have only one value. like gauge and counter.
     template <typename T>
-    inline void encode_single_value(dsn::json::JsonWriter &writer,
-                                    const T &value,
-                                    const metric_filters &filters) const
+    static inline void
+    encode_single_value(metric_json_writer &writer, const T &value, const metric_filters &filters)
     {
         encode(writer, kMetricSingleValueField, value, filters);
     }
@@ -446,6 +728,8 @@ protected:
     const metric_prototype *const _prototype;
 
 private:
+    friend class metric_entity;
+
     DISALLOW_COPY_AND_ASSIGN(metric);
 };
 
@@ -496,7 +780,7 @@ public:
     // where "name" is the name of the gauge in string type, and "value" is just current value
     // of the gauge fetched by `value()`, in numeric types (i.e. integral or floating-point type,
     // determined by `value_type`).
-    void take_snapshot(json::JsonWriter &writer, const metric_filters &filters) override
+    void take_snapshot(metric_json_writer &writer, const metric_filters &filters) override
     {
         writer.StartObject();
 
@@ -613,7 +897,7 @@ public:
     // }
     // where "name" is the name of the counter in string type, and "value" is just current value
     // of the counter fetched by `value()`, in integral type (namely int64_t).
-    void take_snapshot(json::JsonWriter &writer, const metric_filters &filters) override
+    void take_snapshot(metric_json_writer &writer, const metric_filters &filters) override
     {
         writer.StartObject();
 
@@ -745,56 +1029,6 @@ inline size_t kth_percentile_to_nth_index(size_t size, kth_percentile_type type)
     return kth_percentile_to_nth_index(size, static_cast<size_t>(type));
 }
 
-// `percentile_timer` is a timer class that encapsulates the details how each percentile is
-// computed periodically.
-//
-// To be instantiated, it requires `interval_ms` at which a percentile is computed and `exec`
-// which is used to compute percentile.
-//
-// In case that all percentiles are computed at the same time and lead to very high load,
-// first computation for percentile will be delayed at a random interval.
-class percentile_timer
-{
-public:
-    enum class state : int
-    {
-        kRunning,
-        kClosing,
-        kClosed,
-    };
-
-    using on_exec_fn = std::function<void()>;
-    using on_close_fn = std::function<void()>;
-
-    percentile_timer(uint64_t interval_ms, on_exec_fn on_exec, on_close_fn on_close);
-    ~percentile_timer() = default;
-
-    void close();
-    void wait();
-
-    // Get the initial delay that is randomly generated by `generate_initial_delay_ms()`.
-    uint64_t get_initial_delay_ms() const { return _initial_delay_ms; }
-
-private:
-    // Generate an initial delay randomly in case that all percentiles are computed at the
-    // same time.
-    static uint64_t generate_initial_delay_ms(uint64_t interval_ms);
-
-    void on_close();
-
-    void on_timer(const boost::system::error_code &ec);
-
-    const uint64_t _initial_delay_ms;
-    const uint64_t _interval_ms;
-    const on_exec_fn _on_exec;
-    const on_close_fn _on_close;
-    std::atomic<state> _state;
-    utils::notify_event _completed;
-    std::unique_ptr<boost::asio::deadline_timer> _timer;
-
-    DISALLOW_COPY_AND_ASSIGN(percentile_timer);
-};
-
 // The percentile is a metric type that samples observations. The size of samples has an upper
 // bound. Once the maximum size is reached, the earliest observations will be overwritten.
 //
@@ -845,7 +1079,7 @@ public:
     // where "name" is the name of the percentile in string type, with each configured kth
     // percentile followed, such as "p50", "p90", "p95", etc. All of them are in numeric types
     // (i.e. integral or floating-point type, determined by `value_type`).
-    void take_snapshot(json::JsonWriter &writer, const metric_filters &filters) override
+    void take_snapshot(metric_json_writer &writer, const metric_filters &filters) override
     {
         writer.StartObject();
 
@@ -875,6 +1109,8 @@ protected:
     // interval_ms is the interval between the computations for percentiles. Its unit is
     // milliseconds. It's suggested that interval_ms should be near the period between pulls
     // from or pushes to the monitoring system.
+    // TODO(wangdan): we can also support constructing percentiles from the parameters in
+    // the configuration file.
     percentile(const metric_prototype *prototype,
                uint64_t interval_ms = 10000,
                const std::set<kth_percentile_type> &kth_percentiles = kAllKthPercentileTypes,
@@ -919,7 +1155,7 @@ protected:
         // See on_close() for details which is registered in timer and will be called
         // back once close() is invoked.
         add_ref();
-        _timer.reset(new percentile_timer(
+        _timer.reset(new metric_timer(
             interval_ms,
             std::bind(&percentile<value_type, NthElementFinder>::find_nth_elements, this),
             std::bind(&percentile<value_type, NthElementFinder>::on_close, this)));
@@ -1012,7 +1248,7 @@ private:
     std::vector<std::atomic<value_type>> _full_nth_elements;
     NthElementFinder _nth_element_finder;
 
-    std::unique_ptr<percentile_timer> _timer;
+    std::unique_ptr<metric_timer> _timer;
 
     DISALLOW_COPY_AND_ASSIGN(percentile);
 };

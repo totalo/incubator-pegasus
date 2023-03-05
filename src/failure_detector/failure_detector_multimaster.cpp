@@ -34,7 +34,7 @@
  */
 
 #include <cinttypes>
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include "runtime/rpc/group_address.h"
 #include "failure_detector/failure_detector_multimaster.h"
 #include "utils/rand.h"
@@ -48,8 +48,10 @@ slave_failure_detector_with_multimaster::slave_failure_detector_with_multimaster
     std::function<void()> &&master_connected_callback)
 {
     _meta_servers.assign_group("meta-servers");
-    for (auto &s : meta_servers) {
-        _meta_servers.group_address()->add(s);
+    for (const auto &s : meta_servers) {
+        if (!_meta_servers.group_address()->add(s)) {
+            LOG_WARNING("duplicate adress {}", s);
+        }
     }
 
     _meta_servers.group_address()->set_leader(
@@ -72,12 +74,12 @@ void slave_failure_detector_with_multimaster::end_ping(::dsn::error_code err,
                                                        const fd::beacon_ack &ack,
                                                        void *)
 {
-    LOG_INFO("end ping result, error[%s], time[%" PRId64
-             "], ack.this_node[%s], ack.primary_node[%s], ack.is_master[%s], ack.allowed[%s]",
-             err.to_string(),
+    LOG_INFO("end ping result, error[{}], time[{}], ack.this_node[{}], ack.primary_node[{}], "
+             "ack.is_master[{}], ack.allowed[{}]",
+             err,
              ack.time,
-             ack.this_node.to_string(),
-             ack.primary_node.to_string(),
+             ack.this_node,
+             ack.primary_node,
              ack.is_master ? "true" : "false",
              ack.allowed ? "true" : "false");
 

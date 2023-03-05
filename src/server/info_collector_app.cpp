@@ -32,7 +32,7 @@
 #include "runtime/rpc/rpc_stream.h"
 #include "runtime/serverlet.h"
 #include "runtime/service_app.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include "common/replication_other_types.h"
 #include "common/replication.codes.h"
 #include "common/replication_other_types.h"
@@ -44,9 +44,14 @@
 namespace pegasus {
 namespace server {
 
+class collector_http_service : public ::dsn::http_server_base
+{
+};
+
 info_collector_app::info_collector_app(const dsn::service_app_info *info)
     : service_app(info), _updater_started(false)
 {
+    register_http_service(new collector_http_service());
     dsn::start_http_server();
 }
 

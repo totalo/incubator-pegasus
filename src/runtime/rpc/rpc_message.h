@@ -44,7 +44,7 @@
 #include "utils/threadpool_code.h"
 #include "runtime/task/task_code.h"
 #include "common/gpid.h"
-#include "utils/rpc_address.h"
+#include "rpc_address.h"
 #include "runtime/global_config.h"
 
 #define DSN_MAX_TASK_CODE_NAME_LENGTH 48
@@ -233,9 +233,6 @@ private:
     int _rw_offset;     // current buffer offset
     bool _rw_committed; // mark if it is in middle state of reading/writing
     bool _is_read;      // is for read(recv) or write(send)
-
-public:
-    static uint32_t s_local_hash; // used by fast_rpc_name
 };
 typedef dsn::ref_ptr<message_ex> message_ptr;
 

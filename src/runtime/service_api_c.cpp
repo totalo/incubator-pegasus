@@ -24,37 +24,45 @@
  * THE SOFTWARE.
  */
 
-#include "service_engine.h"
-#include "utils/coredump.h"
-#include "runtime/rpc/rpc_engine.h"
-#include "runtime/task/task_engine.h"
-#include "runtime/security/init.h"
-
 #include <fstream>
-
-#include "runtime/api_task.h"
-#include "runtime/api_layer1.h"
-#include "runtime/app_model.h"
-#include "utils/api_utilities.h"
-#include "runtime/tool_api.h"
-#include "utils/command_manager.h"
-#include "runtime/rpc/serialization.h"
-#include "utils/filesystem.h"
-#include "utils/process_utils.h"
-#include "utils/flags.h"
-#include "utils/time_utils.h"
-#include "utils/errors.h"
-#include "utils/fmt_logging.h"
 
 #ifdef DSN_ENABLE_GPERF
 #include <gperftools/malloc_extension.h>
 #endif
 
-#include "service_engine.h"
+#include "runtime/api_layer1.h"
+#include "runtime/api_task.h"
+#include "runtime/app_model.h"
 #include "runtime/rpc/rpc_engine.h"
-#include "runtime/task/task_engine.h"
-#include "utils/coredump.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/security/init.h"
 #include "runtime/security/negotiation_manager.h"
+#include "runtime/service_engine.h"
+#include "runtime/task/task_engine.h"
+#include "runtime/tool_api.h"
+#include "utils/api_utilities.h"
+#include "utils/command_manager.h"
+#include "utils/coredump.h"
+#include "utils/errors.h"
+#include "utils/filesystem.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/time_utils.h"
+#include "utils/process_utils.h"
+
+DSN_DEFINE_bool(core,
+                pause_on_start,
+                false,
+                "whether to pause at startup time for easier debugging");
+
+#ifdef DSN_ENABLE_GPERF
+DSN_DEFINE_double(core,
+                  tcmalloc_release_rate,
+                  1.,
+                  "the memory releasing rate of tcmalloc, default "
+                  "is 1.0 in gperftools, value range is "
+                  "[0.0, 10.0]");
+#endif
 
 namespace dsn {
 namespace security {
@@ -79,6 +87,8 @@ static struct _all_info_
     bool is_engine_ready() const { return magic == 0xdeadbeef && engine_ready; }
 
 } dsn_all;
+
+std::unique_ptr<dsn::command_deregister> dump_log_cmd;
 
 volatile int *dsn_task_queue_virtual_length_ptr(dsn::task_code code, int hash)
 {
@@ -181,6 +191,8 @@ bool dsn_run_config(const char *config, bool is_server)
 
 [[noreturn]] void dsn_exit(int code)
 {
+    dump_log_cmd.reset();
+
     printf("dsn exit with code %d\n", code);
     fflush(stdout);
     ::dsn::tools::sys_exit.execute(::dsn::SYS_EXIT_NORMAL);
@@ -199,7 +211,7 @@ bool dsn_mimic_app(const char *app_role, int index)
         if (cnode->spec().role_name == std::string(app_role) && cnode->spec().index == index) {
             return true;
         } else {
-            LOG_ERROR("current thread is already attached to another rDSN app %s", name.c_str());
+            LOG_ERROR("current thread is already attached to another rDSN app {}", name);
             return false;
         }
     }
@@ -213,7 +225,7 @@ bool dsn_mimic_app(const char *app_role, int index)
         }
     }
 
-    LOG_ERROR("cannot find host app %s with index %d", app_role, index);
+    LOG_ERROR("cannot find host app {} with index {}", app_role, index);
     return false;
 }
 
@@ -249,13 +261,13 @@ void dsn_run(int argc, char **argv, bool is_server)
     std::string app_list = "";
 
     for (int i = 2; i < argc;) {
-        if (0 == strcmp(argv[i], "-cargs")) {
+        if (dsn::utils::equals(argv[i], "-cargs")) {
             if (++i < argc) {
                 config_args = std::string(argv[i++]);
             }
         }
 
-        else if (0 == strcmp(argv[i], "-app_list")) {
+        else if (dsn::utils::equals(argv[i], "-app_list")) {
             if (++i < argc) {
                 app_list = std::string(argv[i++]);
             }
@@ -365,10 +377,7 @@ bool run(const char *config_file,
     dsn_all.magic = 0xdeadbeef;
 
     // pause when necessary
-    if (dsn_config_get_value_bool("core",
-                                  "pause_on_start",
-                                  false,
-                                  "whether to pause at startup time for easier debugging")) {
+    if (FLAGS_pause_on_start) {
         printf("\nPause for debugging (pid = %d)...\n", static_cast<int>(getpid()));
         getchar();
     }
@@ -416,13 +425,7 @@ bool run(const char *config_file,
     }
 
 #ifdef DSN_ENABLE_GPERF
-    double_t tcmalloc_release_rate =
-        (double_t)dsn_config_get_value_double("core",
-                                              "tcmalloc_release_rate",
-                                              1., // [0, 10]
-                                              "the memory releasing rate of tcmalloc, default is "
-                                              "1.0 in gperftools, value range is 0.0~10.0");
-    ::MallocExtension::instance()->SetMemoryReleaseRate(tcmalloc_release_rate);
+    ::MallocExtension::instance()->SetMemoryReleaseRate(FLAGS_tcmalloc_release_rate);
 #endif
 
     // init logging
@@ -431,7 +434,7 @@ bool run(const char *config_file,
     // prepare minimum necessary
     ::dsn::service_engine::instance().init_before_toollets(spec);
 
-    LOG_INFO("process(%ld) start: %" PRIu64 ", date: %s",
+    LOG_INFO("process({}) start: {}, date: {}",
              getpid(),
              dsn::utils::process_start_millis(),
              dsn::utils::process_start_date_time_mills());
@@ -510,24 +513,25 @@ bool run(const char *config_file,
         exit(1);
     }
 
-    dsn::command_manager::instance().register_command({"config-dump"},
-                                                      "config-dump - dump configuration",
-                                                      "config-dump [to-this-config-file]",
-                                                      [](const std::vector<std::string> &args) {
-                                                          std::ostringstream oss;
-                                                          std::ofstream off;
-                                                          std::ostream *os = &oss;
-                                                          if (args.size() > 0) {
-                                                              off.open(args[0]);
-                                                              os = &off;
+    dump_log_cmd =
+        dsn::command_manager::instance().register_command({"config-dump"},
+                                                          "config-dump - dump configuration",
+                                                          "config-dump [to-this-config-file]",
+                                                          [](const std::vector<std::string> &args) {
+                                                              std::ostringstream oss;
+                                                              std::ofstream off;
+                                                              std::ostream *os = &oss;
+                                                              if (args.size() > 0) {
+                                                                  off.open(args[0]);
+                                                                  os = &off;
 
-                                                              oss << "config dump to file "
-                                                                  << args[0] << std::endl;
-                                                          }
+                                                                  oss << "config dump to file "
+                                                                      << args[0] << std::endl;
+                                                              }
 
-                                                          dsn_config_dump(*os);
-                                                          return oss.str();
-                                                      });
+                                                              dsn_config_dump(*os);
+                                                              return oss.str();
+                                                          });
 
     // invoke customized init after apps are created
     dsn::tools::sys_init_after_app_created.execute();

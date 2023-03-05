@@ -28,7 +28,7 @@
 #include "runtime/rpc/rpc_stream.h"
 #include "runtime/serverlet.h"
 #include "runtime/service_app.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iostream>
@@ -46,6 +46,8 @@ DEFINE_THREAD_POOL_CODE(THREAD_POOL_META_TEST)
 DEFINE_TASK_CODE(TASK_META_TEST, TASK_PRIORITY_COMMON, THREAD_POOL_META_TEST)
 
 meta_service_test_app *g_app;
+
+DSN_DEFINE_uint32(tools.simulator, random_seed, 0, "random seed");
 
 // as it is not easy to clean test environment in some cases, we simply run these tests in several
 // commands,
@@ -80,13 +82,11 @@ TEST(meta, app_envs_basic_test) { g_app->app_envs_basic_test(); }
 
 dsn::error_code meta_service_test_app::start(const std::vector<std::string> &args)
 {
-    uint32_t seed =
-        (uint32_t)dsn_config_get_value_uint64("tools.simulator", "random_seed", 0, "random seed");
-    if (seed == 0) {
-        seed = time(0);
-        LOG_ERROR("initial seed: %u", seed);
+    if (FLAGS_random_seed == 0) {
+        FLAGS_random_seed = static_cast<uint32_t>(time(nullptr));
+        LOG_INFO("initial seed: {}", FLAGS_random_seed);
     }
-    srand(seed);
+    srand(FLAGS_random_seed);
 
     int argc = args.size();
     char *argv[20];

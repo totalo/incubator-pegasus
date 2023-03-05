@@ -176,10 +176,11 @@ public:
         return metas.substr(0, metas.length() - 1);
     }
 
+    std::string cluster_root() const { return _cluster_root; }
+
 private:
     void register_rpc_handlers();
     void register_ctrl_commands();
-    void unregister_ctrl_commands();
 
     // client => meta server
     void on_query_configuration_by_index(configuration_query_by_index_rpc rpc);
@@ -195,6 +196,7 @@ private:
     void on_create_app(dsn::message_ex *req);
     void on_drop_app(dsn::message_ex *req);
     void on_recall_app(dsn::message_ex *req);
+    void on_rename_app(configuration_rename_app_rpc rpc);
     void on_list_apps(configuration_list_apps_rpc rpc);
     void on_list_nodes(configuration_list_nodes_rpc rpc);
 
@@ -352,7 +354,7 @@ int meta_service::check_leader(TRpcHolder rpc, rpc_address *forward_address)
             return -1;
         }
 
-        LOG_DEBUG("leader address: %s", leader.to_string());
+        LOG_DEBUG("leader address: {}", leader);
         if (!leader.is_invalid()) {
             rpc.forward(leader);
             return 0;
@@ -385,7 +387,7 @@ bool meta_service::check_status(TRpcHolder rpc, rpc_address *forward_address)
         } else {
             rpc.response().err = ERR_SERVICE_NOT_ACTIVE;
         }
-        LOG_INFO("reject request with %s", rpc.response().err.to_string());
+        LOG_INFO("reject request with {}", rpc.response().err);
         return false;
     }
 
@@ -414,7 +416,7 @@ bool meta_service::check_status_with_msg(message_ex *req, TRespType &response_st
         } else {
             response_struct.err = ERR_SERVICE_NOT_ACTIVE;
         }
-        LOG_INFO("reject request with %s", response_struct.err.to_string());
+        LOG_INFO("reject request with {}", response_struct.err);
         reply(req, response_struct);
         return false;
     }

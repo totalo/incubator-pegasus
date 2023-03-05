@@ -17,25 +17,26 @@
 
 #ifdef DSN_ENABLE_GPERF
 
-#include <fcntl.h>
+#include "pprof_http_service.h"
 
-#include <cstdlib>
 #include <chrono>
+#include <cstdlib>
+#include <fcntl.h>
 #include <fstream>
 #include <sstream>
 
-#include "pprof_http_service.h"
-
-#include "utils/fmt_logging.h"
-#include "runtime/api_layer1.h"
-#include "utils/process_utils.h"
-#include "utils/string_conv.h"
-#include "utils/defer.h"
-#include "utils/timer.h"
-#include "utils/string_splitter.h"
 #include <gperftools/heap-profiler.h>
 #include <gperftools/malloc_extension.h>
 #include <gperftools/profiler.h>
+
+#include "runtime/api_layer1.h"
+#include "utils/defer.h"
+#include "utils/fmt_logging.h"
+#include "utils/process_utils.h"
+#include "utils/string_conv.h"
+#include "utils/string_splitter.h"
+#include "utils/strings.h"
+#include "utils/timer.h"
 
 namespace dsn {
 
@@ -72,10 +73,10 @@ static int extract_symbols_from_binary(std::map<uintptr_t, std::string> &addr_ma
     std::string cmd = "nm -C -p ";
     cmd.append(lib_info.path);
     std::stringstream ss;
-    LOG_INFO("executing `%s`", cmd.c_str());
+    LOG_INFO("executing `{}`", cmd);
     const int rc = utils::pipe_execute(cmd.c_str(), ss);
     if (rc < 0) {
-        LOG_ERROR("fail to popen `%s`", cmd.c_str());
+        LOG_ERROR("fail to popen `{}`", cmd);
         return -1;
     }
     std::string line;
@@ -109,9 +110,9 @@ static int extract_symbols_from_binary(std::map<uintptr_t, std::string> &addr_ma
             continue;
         }
         const char *name_begin = sp.field();
-        if (strncmp(name_begin, "typeinfo ", 9) == 0 || strncmp(name_begin, "VTT ", 4) == 0 ||
-            strncmp(name_begin, "vtable ", 7) == 0 || strncmp(name_begin, "global ", 7) == 0 ||
-            strncmp(name_begin, "guard ", 6) == 0) {
+        if (utils::equals(name_begin, "typeinfo ", 9) || utils::equals(name_begin, "VTT ", 4) ||
+            utils::equals(name_begin, "vtable ", 7) || utils::equals(name_begin, "global ", 7) ||
+            utils::equals(name_begin, "guard ", 6)) {
             addr_map[addr] = std::string();
             continue;
         }
@@ -161,7 +162,7 @@ static int extract_symbols_from_binary(std::map<uintptr_t, std::string> &addr_ma
         addr_map[lib_info.end_addr] = std::string();
     }
     tm.stop();
-    LOG_INFO("Loaded %s in %zdms", lib_info.path.c_str(), tm.m_elapsed());
+    LOG_INFO("Loaded {} in {}ms", lib_info.path, tm.m_elapsed().count());
     return 0;
 }
 
@@ -258,11 +259,11 @@ static void load_symbols()
     }
     tm2.stop();
     if (num_removed) {
-        LOG_INFO("Removed %zd entries in %zdms", num_removed, tm2.m_elapsed());
+        LOG_INFO("Removed {} entries in {}ms", num_removed, tm2.m_elapsed().count());
     }
 
     tm.stop();
-    LOG_INFO("Loaded all symbols in %zdms", tm.m_elapsed());
+    LOG_INFO("Loaded all symbols in {}ms", tm.m_elapsed().count());
 }
 
 static void find_symbols(std::string *out, std::vector<uintptr_t> &addr_list)
@@ -328,7 +329,7 @@ void pprof_http_service::heap_handler(const http_request &req, http_response &re
 {
     bool in_pprof = false;
     if (!_in_pprof_action.compare_exchange_strong(in_pprof, true)) {
-        LOG_WARNING_F("node is already exectuting pprof action, please wait and retry");
+        LOG_WARNING("node is already exectuting pprof action, please wait and retry");
         resp.status_code = http_status_code::internal_server_error;
         return;
     }
@@ -425,7 +426,7 @@ void pprof_http_service::growth_handler(const http_request &req, http_response &
 {
     bool in_pprof = false;
     if (!_in_pprof_action.compare_exchange_strong(in_pprof, true)) {
-        LOG_WARNING_F("node is already exectuting pprof action, please wait and retry");
+        LOG_WARNING("node is already exectuting pprof action, please wait and retry");
         resp.status_code = http_status_code::internal_server_error;
         return;
     }
@@ -468,7 +469,7 @@ void pprof_http_service::profile_handler(const http_request &req, http_response 
 {
     bool in_pprof = false;
     if (!_in_pprof_action.compare_exchange_strong(in_pprof, true)) {
-        LOG_WARNING_F("node is already exectuting pprof action, please wait and retry");
+        LOG_WARNING("node is already exectuting pprof action, please wait and retry");
         resp.status_code = http_status_code::internal_server_error;
         return;
     }

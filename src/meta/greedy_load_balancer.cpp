@@ -39,7 +39,7 @@
 
 namespace dsn {
 namespace replication {
-DSN_DEFINE_bool("meta_server", balance_cluster, false, "whether to enable cluster balancer");
+DSN_DEFINE_bool(meta_server, balance_cluster, false, "whether to enable cluster balancer");
 DSN_TAG_VARIABLE(balance_cluster, FT_MUTABLE);
 
 DSN_DECLARE_uint64(min_live_node_count_for_unfreeze);
@@ -73,7 +73,7 @@ greedy_load_balancer::greedy_load_balancer(meta_service *_svc) : server_load_bal
         "copy secondary count by balancer in the recent period");
 }
 
-greedy_load_balancer::~greedy_load_balancer() { unregister_ctrl_commands(); }
+greedy_load_balancer::~greedy_load_balancer() {}
 
 void greedy_load_balancer::register_ctrl_commands()
 {
@@ -83,8 +83,6 @@ void greedy_load_balancer::register_ctrl_commands()
         "get balance operation count",
         [this](const std::vector<std::string> &args) { return get_balance_operation_count(args); });
 }
-
-void greedy_load_balancer::unregister_ctrl_commands() { _get_balance_operation_count.reset(); }
 
 std::string greedy_load_balancer::get_balance_operation_count(const std::vector<std::string> &args)
 {
@@ -156,10 +154,7 @@ bool greedy_load_balancer::all_replica_infos_collected(const node_state &ns)
     return ns.for_each_partition([this, n](const dsn::gpid &pid) {
         config_context &cc = *get_config_context(*(t_global_view->apps), pid);
         if (cc.find_from_serving(n) == cc.serving.end()) {
-            LOG_INFO("meta server hasn't collected gpid(%d.%d)'s info of %s",
-                     pid.get_app_id(),
-                     pid.get_partition_index(),
-                     n.to_string());
+            LOG_INFO("meta server hasn't collected gpid({})'s info of {}", pid, n);
             return false;
         }
         return true;

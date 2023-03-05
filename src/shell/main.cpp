@@ -17,15 +17,17 @@
  * under the License.
  */
 
-#include <pegasus/version.h>
-#include "utils/strings.h"
+#include <algorithm>
 #include <setjmp.h>
 #include <signal.h>
-#include <algorithm>
+
+#include <pegasus/version.h>
+
 #include "args.h"
+#include "base/pegasus_const.h"
 #include "command_executor.h"
 #include "commands.h"
-#include "base/pegasus_const.h"
+#include "utils/strings.h"
 
 std::map<std::string, command_executor *> s_commands_map;
 shell_context s_global_context;
@@ -81,7 +83,7 @@ static command_executor commands[] = {
     {
         "create",
         "create an app",
-        "<app_name> [-p|--partition_count num] [-r|--replica_count num] "
+        "<app_name> [-p|--partition_count num] [-r|--replica_count num] [-f|--fail_if_exist] "
         "[-e|--envs k1=v1,k2=v2...]",
         create_app,
     },
@@ -90,6 +92,9 @@ static command_executor commands[] = {
     },
     {
         "recall", "recall an app", "<app_id> [new_app_name]", recall_app,
+    },
+    {
+        "rename", "rename an app", "<old_app_name> <new_app_name>", rename_app,
     },
     {
         "set_meta_level",
@@ -587,7 +592,7 @@ static void completionCallback(const char *buf, linenoiseCompletions *lc)
         const command_executor &c = commands[i];
 
         size_t matchlen = strlen(buf);
-        if (strncasecmp(buf, c.name, matchlen) == 0) {
+        if (dsn::utils::iequals(buf, c.name, matchlen)) {
             linenoiseAddCompletion(lc, c.name);
         }
     }
@@ -609,7 +614,7 @@ static char *hintsCallback(const char *buf, int *color, int *bold)
     bool endWithSpace = buflen && isspace(buf[buflen - 1]);
 
     for (int i = 0; commands[i].name != nullptr; ++i) {
-        if (strcasecmp(argv[0], commands[i].name) == 0) {
+        if (dsn::utils::iequals(argv[0], commands[i].name)) {
             *color = 90;
             *bold = 0;
             sds hint = sdsnew(commands[i].option_usage);

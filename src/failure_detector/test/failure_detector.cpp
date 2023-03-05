@@ -41,11 +41,16 @@
 #include "runtime/rpc/rpc_stream.h"
 #include "runtime/serverlet.h"
 #include "runtime/service_app.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include <vector>
+#include "utils/flags.h"
+
+DSN_DECLARE_int32(max_succssive_unstable_restart);
 
 using namespace dsn;
 using namespace dsn::fd;
+
+DSN_DECLARE_uint64(stable_rs_min_running_seconds);
 
 #define MPORT_START 30001
 #define WPORT 40001
@@ -68,7 +73,7 @@ protected:
         if (_send_ping_switch)
             failure_detector::send_beacon(node, time);
         else {
-            LOG_DEBUG("ignore send beacon, to node[%s], time[%" PRId64 "]", node.to_string(), time);
+            LOG_DEBUG("ignore send beacon, to node[{}], time[{}]", node, time);
         }
     }
 
@@ -118,10 +123,10 @@ public:
         if (_response_ping_switch)
             meta_server_failure_detector::on_ping(beacon, reply);
         else {
-            LOG_DEBUG("ignore on ping, beacon msg, time[%" PRId64 "], from[%s], to[%s]",
+            LOG_DEBUG("ignore on ping, beacon msg, time[{}], from[{}], to[{}]",
                       beacon.time,
-                      beacon.from_addr.to_string(),
-                      beacon.to_addr.to_string());
+                      beacon.from_addr,
+                      beacon.to_addr);
         }
     }
 
@@ -180,8 +185,8 @@ public:
 
     void on_master_config(const config_master_message &request, bool &response)
     {
-        LOG_DEBUG("master config: request:%s, type:%s",
-                  request.master.to_string(),
+        LOG_DEBUG("master config, request: {}, type: {}",
+                  request.master,
                   request.is_register ? "reg" : "unreg");
         if (request.is_register)
             _worker_fd->register_master(request.master);
@@ -202,8 +207,8 @@ public:
 
     error_code start(const std::vector<std::string> &args) override
     {
-        _opts.stable_rs_min_running_seconds = 10;
-        _opts.max_succssive_unstable_restart = 10;
+        FLAGS_stable_rs_min_running_seconds = 10;
+        FLAGS_max_succssive_unstable_restart = 10;
 
         _master_fd = new master_fd_test();
         _master_fd->set_options(&_opts);
@@ -220,7 +225,7 @@ public:
         }
 
         _master_fd->start(1, 1, 9, 10, use_allow_list);
-        LOG_DEBUG("%s", _master_fd->get_allow_list(std::vector<std::string>{}).c_str());
+        LOG_DEBUG("{}", _master_fd->get_allow_list({}));
         ++started_apps;
 
         return ERR_OK;
@@ -263,11 +268,11 @@ bool get_worker_and_master(test_worker *&worker, std::vector<test_master *> &mas
     worker = nullptr;
 
     for (int i = 0; i != apps.size(); ++i) {
-        if (strcmp(apps[i]->info().type.c_str(), "worker") == 0) {
+        if (apps[i]->info().type == "worker") {
             if (worker != nullptr)
                 return false;
             worker = reinterpret_cast<test_worker *>(apps[i]);
-        } else if (strcmp(apps[i]->info().type.c_str(), "master") == 0) {
+        } else if (apps[i]->info().type == "master") {
             int index = apps[i]->info().index - 1;
             if (index >= masters.size() || masters[index] != nullptr)
                 return false;
@@ -507,7 +512,7 @@ TEST(fd, old_master_died)
 
     worker->fd()->when_disconnected([](const std::vector<rpc_address> &masters_list) {
         ASSERT_EQ(masters_list.size(), 1);
-        LOG_DEBUG("disconnect from master: %s", masters_list[0].to_string());
+        LOG_DEBUG("disconnect from master: {}", masters_list[0]);
     });
 
     /*first let's stop the old master*/
@@ -618,8 +623,8 @@ TEST(fd, update_stability)
     fd->toggle_response_ping(true);
 
     replication::fd_suboptions opts;
-    opts.stable_rs_min_running_seconds = 5;
-    opts.max_succssive_unstable_restart = 2;
+    FLAGS_stable_rs_min_running_seconds = 5;
+    FLAGS_max_succssive_unstable_restart = 2;
     fd->set_options(&opts);
 
     replication::meta_server_failure_detector::stability_map *smap =

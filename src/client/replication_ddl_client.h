@@ -38,7 +38,7 @@
 #include "runtime/rpc/rpc_stream.h"
 #include "runtime/serverlet.h"
 #include "runtime/service_app.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include "common/replication_other_types.h"
 #include "common/replication.codes.h"
 
@@ -65,12 +65,17 @@ public:
                                int partition_count,
                                int replica_count,
                                const std::map<std::string, std::string> &envs,
-                               bool is_stateless);
+                               bool is_stateless,
+                               bool success_if_exist = true);
 
-    // reserve_seconds == 0 means use default value in configuration 'hold_seconds_for_dropped_app'
+    // 'reserve_seconds' == 0 means use default value in configuration
+    // FLAGS_hold_seconds_for_dropped_app.
     dsn::error_code drop_app(const std::string &app_name, int reserve_seconds);
 
     dsn::error_code recall_app(int32_t app_id, const std::string &new_app_name);
+
+    error_with<configuration_rename_app_response> rename_app(const std::string &old_app_name,
+                                                             const std::string &new_app_name);
 
     dsn::error_code list_apps(const dsn::app_status::type status,
                               bool show_all,

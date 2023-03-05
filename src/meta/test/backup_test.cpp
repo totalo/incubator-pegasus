@@ -27,7 +27,7 @@
 #include "runtime/rpc/rpc_stream.h"
 #include "runtime/serverlet.h"
 #include "runtime/service_app.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include "utils/fail_point.h"
 #include "utils/time_utils.h"
 #include <gtest/gtest.h>
@@ -40,6 +40,10 @@
 
 namespace dsn {
 namespace replication {
+
+DSN_DECLARE_int32(cold_backup_checkpoint_reserve_minutes);
+DSN_DECLARE_string(cluster_root);
+DSN_DECLARE_string(meta_state_service_type);
 
 struct method_record
 {
@@ -76,7 +80,7 @@ protected:
     MOCK_HELPER_FUNCS(method_name)                                                                 \
     void method_name()                                                                             \
     {                                                                                              \
-        LOG_INFO("%s is called", #method_name);                                                    \
+        LOG_INFO("{} is called", #method_name);                                                    \
         int &c = counter_##method_name();                                                          \
         ++c;                                                                                       \
         int max_call = maxcall_##method_name();                                                    \
@@ -92,7 +96,7 @@ protected:
     MOCK_HELPER_FUNCS(method_name)                                                                 \
     void method_name(type1 arg1)                                                                   \
     {                                                                                              \
-        LOG_INFO("%s is called", #method_name);                                                    \
+        LOG_INFO("{} is called", #method_name);                                                    \
         int &c = counter_##method_name();                                                          \
         ++c;                                                                                       \
         int max_call = maxcall_##method_name();                                                    \
@@ -108,7 +112,7 @@ protected:
     MOCK_HELPER_FUNCS(method_name)                                                                 \
     void method_name(type1 arg1, type2 arg2)                                                       \
     {                                                                                              \
-        LOG_INFO("%s is called", #method_name);                                                    \
+        LOG_INFO("{} is called", #method_name);                                                    \
         int &c = counter_##method_name();                                                          \
         ++c;                                                                                       \
         int max_call = maxcall_##method_name();                                                    \
@@ -124,7 +128,7 @@ protected:
     MOCK_HELPER_FUNCS(method_name)                                                                 \
     void method_name(type1 arg1, type2 arg2, type3, arg3)                                          \
     {                                                                                              \
-        LOG_INFO("%s is called", #method_name);                                                    \
+        LOG_INFO("{} is called", #method_name);                                                    \
         int &c = counter_##method_name();                                                          \
         ++c;                                                                                       \
         int max_call = maxcall_##method_name();                                                    \
@@ -726,11 +730,11 @@ protected:
         meta_test_base::SetUp();
 
         meta_options &opt = _meta_svc->_meta_opts;
-        opt.cluster_root = "/meta_test";
-        opt.meta_state_service_type = "meta_state_service_simple";
+        FLAGS_cluster_root = "/meta_test";
+        FLAGS_meta_state_service_type = "meta_state_service_simple";
         _meta_svc->remote_storage_initialize();
         std::string backup_root = "/backup_test";
-        std::string policy_meta_root = opt.cluster_root + "/backup_policies";
+        std::string policy_meta_root = std::string(FLAGS_cluster_root) + "/backup_policies";
         _meta_svc->_backup_handler = std::make_shared<backup_service>(
             _meta_svc.get(), policy_meta_root, backup_root, [](backup_service *bs) {
                 return std::make_shared<mock_policy>(bs);
@@ -793,8 +797,8 @@ TEST_F(meta_backup_service_test, test_add_backup_policy)
         fake_wait_rpc(r, resp);
 
         std::string hint_message = fmt::format(
-            "backup interval must be greater than cold_backup_checkpoint_reserve_minutes={}",
-            _meta_svc->get_options().cold_backup_checkpoint_reserve_minutes);
+            "backup interval must be greater than FLAGS_cold_backup_checkpoint_reserve_minutes={}",
+            FLAGS_cold_backup_checkpoint_reserve_minutes);
         ASSERT_EQ(ERR_INVALID_PARAMETERS, resp.err);
         ASSERT_EQ(hint_message, resp.hint_message);
         req.backup_interval_seconds = old_backup_interval_seconds;

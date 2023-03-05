@@ -24,7 +24,7 @@
 #include "base/pegasus_const.h"
 #include "client/replication_ddl_client.h"
 #include "common/replication_other_types.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include "include/pegasus/client.h"
 #include "test/function_test/utils/global_env.h"
 #include "test/function_test/utils/utils.h"
@@ -77,7 +77,7 @@ void test_util::SetUp()
 
 void test_util::run_cmd_from_project_root(const std::string &cmd)
 {
-    ASSERT_EQ(0, chdir(global_env::instance()._pegasus_root.c_str()));
+    ASSERT_EQ(0, ::chdir(global_env::instance()._pegasus_root.c_str()));
     ASSERT_NO_FATAL_FAILURE(run_cmd(cmd));
 }
 

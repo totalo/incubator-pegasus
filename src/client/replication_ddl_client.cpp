@@ -53,13 +53,24 @@
 namespace dsn {
 namespace replication {
 
+#define VALIDATE_TABLE_NAME(app_name)                                                              \
+    do {                                                                                           \
+        if (app_name.empty() ||                                                                    \
+            !std::all_of(app_name.cbegin(),                                                        \
+                         app_name.cend(),                                                          \
+                         (bool (*)(int))replication_ddl_client::valid_app_char))                   \
+            return FMT_ERR(ERR_INVALID_PARAMETERS, "Invalid name. Only 0-9a-zA-Z.:_ are valid!");  \
+    } while (false)
+
 using tp_output_format = ::dsn::utils::table_printer::output_format;
 
 replication_ddl_client::replication_ddl_client(const std::vector<dsn::rpc_address> &meta_servers)
 {
     _meta_server.assign_group("meta-servers");
-    for (auto &m : meta_servers) {
-        _meta_server.group_address()->add(m);
+    for (const auto &m : meta_servers) {
+        if (!_meta_server.group_address()->add(m)) {
+            LOG_WARNING("duplicate adress {}", m);
+        }
     }
 }
 
@@ -73,12 +84,11 @@ dsn::error_code replication_ddl_client::wait_app_ready(const std::string &app_na
     while (true) {
         std::this_thread::sleep_for(std::chrono::seconds(sleep_sec));
 
-        std::shared_ptr<configuration_query_by_index_request> query_req(
-            new configuration_query_by_index_request());
+        std::shared_ptr<query_cfg_request> query_req(new query_cfg_request());
         query_req->app_name = app_name;
 
-        auto query_task = request_meta<configuration_query_by_index_request>(
-            RPC_CM_QUERY_PARTITION_CONFIG_BY_INDEX, query_req);
+        auto query_task =
+            request_meta<query_cfg_request>(RPC_CM_QUERY_PARTITION_CONFIG_BY_INDEX, query_req);
         query_task->wait();
         if (query_task->error() == ERR_INVALID_STATE) {
             std::cout << app_name << " not ready yet, still waiting..." << std::endl;
@@ -92,7 +102,7 @@ dsn::error_code replication_ddl_client::wait_app_ready(const std::string &app_na
             return query_task->error();
         }
 
-        dsn::configuration_query_by_index_response query_resp;
+        dsn::query_cfg_response query_resp;
         ::dsn::unmarshall(query_task->get_response(), query_resp);
         if (query_resp.err != dsn::ERR_OK) {
             std::cout << "create app " << app_name
@@ -124,7 +134,8 @@ dsn::error_code replication_ddl_client::create_app(const std::string &app_name,
                                                    int partition_count,
                                                    int replica_count,
                                                    const std::map<std::string, std::string> &envs,
-                                                   bool is_stateless)
+                                                   bool is_stateless,
+                                                   bool success_if_exist)
 {
     if (partition_count < 1) {
         std::cout << "create app " << app_name << " failed: partition_count should >= 1"
@@ -157,7 +168,7 @@ dsn::error_code replication_ddl_client::create_app(const std::string &app_name,
     req->app_name = app_name;
     req->options.partition_count = partition_count;
     req->options.replica_count = replica_count;
-    req->options.success_if_exist = true;
+    req->options.success_if_exist = success_if_exist;
     req->options.app_type = app_type;
     req->options.envs = envs;
     req->options.is_stateful = !is_stateless;
@@ -382,7 +393,7 @@ dsn::error_code replication_ddl_client::list_apps(const dsn::app_status::type st
             std::vector<partition_configuration> partitions;
             r = list_app(info.app_name, app_id, partition_count, partitions);
             if (r != dsn::ERR_OK) {
-                LOG_ERROR("list app(%s) failed, err = %s", info.app_name.c_str(), r.to_string());
+                LOG_ERROR("list app({}) failed, err = {}", info.app_name, r);
                 return r;
             }
             CHECK_EQ(info.app_id, app_id);
@@ -694,7 +705,7 @@ dsn::error_code replication_ddl_client::list_app(const std::string &app_name,
         max_replica_count = partitions[0].max_replica_count;
     }
 
-    // print configuration_query_by_index_response
+    // print query_cfg_response
     std::streambuf *buf;
     std::ofstream of;
 
@@ -809,19 +820,17 @@ dsn::error_code replication_ddl_client::list_app(const std::string &app_name,
                      (bool (*)(int))replication_ddl_client::valid_app_char))
         return ERR_INVALID_PARAMETERS;
 
-    std::shared_ptr<configuration_query_by_index_request> req(
-        new configuration_query_by_index_request());
+    std::shared_ptr<query_cfg_request> req(new query_cfg_request());
     req->app_name = app_name;
 
-    auto resp_task = request_meta<configuration_query_by_index_request>(
-        RPC_CM_QUERY_PARTITION_CONFIG_BY_INDEX, req);
+    auto resp_task = request_meta<query_cfg_request>(RPC_CM_QUERY_PARTITION_CONFIG_BY_INDEX, req);
 
     resp_task->wait();
     if (resp_task->error() != dsn::ERR_OK) {
         return resp_task->error();
     }
 
-    dsn::configuration_query_by_index_response resp;
+    dsn::query_cfg_response resp;
     dsn::unmarshall(resp_task->get_response(), resp);
     if (resp.err != dsn::ERR_OK) {
         return resp.err;
@@ -1738,5 +1747,16 @@ replication_ddl_client::set_max_replica_count(const std::string &app_name,
         configuration_set_max_replica_count_rpc(std::move(req), RPC_CM_SET_MAX_REPLICA_COUNT));
 }
 
+error_with<configuration_rename_app_response>
+replication_ddl_client::rename_app(const std::string &old_app_name, const std::string &new_app_name)
+{
+    VALIDATE_TABLE_NAME(old_app_name);
+    VALIDATE_TABLE_NAME(new_app_name);
+
+    auto req = std::make_unique<configuration_rename_app_request>();
+    req->__set_old_app_name(old_app_name);
+    req->__set_new_app_name(new_app_name);
+    return call_rpc_sync(configuration_rename_app_rpc(std::move(req), RPC_CM_RENAME_APP));
+}
 } // namespace replication
 } // namespace dsn

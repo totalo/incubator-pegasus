@@ -136,14 +136,15 @@ public:
         return iter->second;
     }
 
-    void query_configuration_by_index(const configuration_query_by_index_request &request,
-                                      /*out*/ configuration_query_by_index_response &response);
+    void query_configuration_by_index(const query_cfg_request &request,
+                                      /*out*/ query_cfg_response &response);
     bool query_configuration_by_gpid(const dsn::gpid id, /*out*/ partition_configuration &config);
 
     // app options
     void create_app(dsn::message_ex *msg);
     void drop_app(dsn::message_ex *msg);
     void recall_app(dsn::message_ex *msg);
+    void rename_app(configuration_rename_app_rpc rpc);
     void list_apps(const configuration_list_apps_request &request,
                    configuration_list_apps_response &response);
     void restore_app(dsn::message_ex *msg);

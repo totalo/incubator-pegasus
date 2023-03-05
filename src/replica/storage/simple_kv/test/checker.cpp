@@ -54,6 +54,8 @@
 
 namespace dsn {
 namespace replication {
+DSN_DECLARE_string(partition_guardian_type);
+
 namespace test {
 
 class checker_partition_guardian : public partition_guardian
@@ -96,11 +98,10 @@ public:
             else {
                 action.node = *pc.last_drops.rbegin();
                 action.type = config_type::CT_ASSIGN_PRIMARY;
-                LOG_ERROR("%d.%d enters DDD state, we are waiting for its last primary node %s to "
+                LOG_ERROR("{} enters DDD state, we are waiting for its last primary node {} to "
                           "come back ...",
-                          pc.pid.get_app_id(),
-                          pc.pid.get_partition_index(),
-                          action.node.to_string());
+                          pc.pid,
+                          action.node);
                 result = pc_status::dead;
             }
             action.target = action.node;
@@ -171,13 +172,13 @@ bool test_checker::init(const std::string &name, const std::vector<service_app *
         PROVIDER_TYPE_MAIN);
 
     for (auto &app : _apps) {
-        if (0 == strcmp(app->info().type.c_str(), "meta")) {
+        if (app->info().type == "meta") {
             meta_service_app *meta_app = (meta_service_app *)app;
             meta_app->_service->_state->set_config_change_subscriber_for_test(
                 std::bind(&test_checker::on_config_change, this, std::placeholders::_1));
-            meta_app->_service->_meta_opts.partition_guardian_type = "checker_partition_guardian";
+            FLAGS_partition_guardian_type = "checker_partition_guardian";
             _meta_servers.push_back(meta_app);
-        } else if (0 == strcmp(app->info().type.c_str(), "replica")) {
+        } else if (app->info().type == "replica") {
             replication_service_app *replica_app = (replication_service_app *)app;
             replica_app->_stub->set_replica_state_subscriber_for_test(
                 std::bind(&test_checker::on_replica_state_change,
@@ -197,12 +198,12 @@ bool test_checker::init(const std::string &name, const std::vector<service_app *
         rpc_address paddr = node.second->rpc()->primary_address();
         int port = paddr.port();
         _node_to_address[name] = paddr;
-        LOG_INFO("=== node_to_address[%s]=%s", name.c_str(), paddr.to_string());
+        LOG_INFO("=== node_to_address[{}]={}", name, paddr);
         _address_to_node[port] = name;
-        LOG_INFO("=== address_to_node[%u]=%s", port, name.c_str());
+        LOG_INFO("=== address_to_node[{}]={}", port, name);
         if (id != port) {
             _address_to_node[id] = name;
-            LOG_INFO("=== address_to_node[%u]=%s", id, name.c_str());
+            LOG_INFO("=== address_to_node[{}]={}", id, name);
         }
     }
 

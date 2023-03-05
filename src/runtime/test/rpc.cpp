@@ -43,7 +43,7 @@
 #include "runtime/rpc/rpc_stream.h"
 #include "runtime/serverlet.h"
 #include "runtime/service_app.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 
 #include "utils/priority_queue.h"
 #include "runtime/rpc/group_address.h"
@@ -59,7 +59,7 @@ static dsn::rpc_address build_group()
     server_group.assign_group("server_group.test");
     dsn::rpc_group_address *g = server_group.group_address();
     for (uint16_t p = TEST_PORT_BEGIN; p <= TEST_PORT_END; ++p) {
-        g->add(dsn::rpc_address("localhost", p));
+        CHECK(g->add(dsn::rpc_address("localhost", p)), "");
     }
 
     g->set_leader(dsn::rpc_address("localhost", TEST_PORT_BEGIN));
@@ -99,7 +99,7 @@ TEST(core, group_address_talk_to_others)
     auto typed_callback = [addr](error_code err_code, const std::string &result) {
         EXPECT_EQ(ERR_OK, err_code);
         dsn::rpc_address addr_got;
-        LOG_INFO("talk to others callback, result: %s", result.c_str());
+        LOG_INFO("talk to others callback, result: {}", result);
         EXPECT_TRUE(addr_got.from_string_ipv4(result.c_str()));
         EXPECT_EQ(TEST_PORT_END, addr_got.port());
     };
@@ -120,7 +120,7 @@ TEST(core, group_address_change_leader)
         rpc_err = err_code;
         if (ERR_OK == err_code) {
             ::dsn::rpc_address addr_got;
-            LOG_INFO("talk to others callback, result: %s", result.c_str());
+            LOG_INFO("talk to others callback, result: {}", result);
             EXPECT_TRUE(addr_got.from_string_ipv4(result.c_str()));
             EXPECT_EQ(TEST_PORT_END, addr_got.port());
         }
@@ -151,7 +151,7 @@ TEST(core, group_address_change_leader)
                                nullptr,
                                typed_callback);
     resp_task->wait();
-    LOG_INFO("addr.leader=%s", addr.group_address()->leader().to_string());
+    LOG_INFO("addr.leader={}", addr.group_address()->leader());
     if (rpc_err == ERR_OK) {
         EXPECT_EQ(TEST_PORT_END, addr.group_address()->leader().port());
     }

@@ -359,15 +359,18 @@ public:
     void exec() override;
     void enqueue() override;
 
+    void update_interval(int interval_ms);
+
 protected:
     void clear_non_trivial_on_task_end() override { _cb = nullptr; }
 
 private:
-    // ATTENTION: if _interval_milliseconds <= 0, then timer task will just be executed once;
-    // otherwise, timer task will be executed periodically(period = _interval_milliseconds)
-    int _interval_milliseconds;
+    // ATTENTION: if _interval_ms == 0, then timer task will just be executed once;
+    // otherwise, timer task will be executed periodically(period = _interval_ms)
+    int _interval_ms;
     task_handler _cb;
 };
+typedef dsn::ref_ptr<dsn::timer_task> timer_task_ptr;
 
 template <typename First, typename... Remaining>
 class future_task : public task
@@ -428,9 +431,9 @@ public:
                 _handler(_request);
             }
         } else {
-            LOG_DEBUG("rpc_request_task(%s) from(%s) stop to execute due to timeout_ms(%d) exceed",
-                      spec().name.c_str(),
-                      _request->header->from_address.to_string(),
+            LOG_DEBUG("rpc_request_task({}) from({}) stop to execute due to timeout_ms({}) exceed",
+                      spec().name,
+                      _request->header->from_address,
                       _request->header->client.timeout_ms);
             spec().on_rpc_task_dropped.execute(this);
         }

@@ -251,11 +251,11 @@ static void check_wait_task(task *waitee)
         task::get_current_worker()->pool_spec().worker_count > 1)
         return;
 
-    LOG_WARNING("task %s waits for another task %s sharing the same thread pool "
+    LOG_WARNING("task {} waits for another task {} sharing the same thread pool "
                 "- will lead to deadlocks easily (e.g., when worker_count = 1 or when the pool "
                 "is partitioned)",
-                task::get_current_task()->spec().code.to_string(),
-                waitee->spec().code.to_string());
+                task::get_current_task()->code(),
+                waitee->code());
 }
 
 bool task::wait_on_cancel()
@@ -433,9 +433,10 @@ const std::vector<task_worker *> &get_threadpool_threads_info(threadpool_code co
 }
 
 timer_task::timer_task(
-    task_code code, const task_handler &cb, int interval_milliseconds, int hash, service_node *node)
-    : task(code, hash, node), _interval_milliseconds(interval_milliseconds), _cb(cb)
+    task_code code, const task_handler &cb, int interval_ms, int hash, service_node *node)
+    : task(code, hash, node), _interval_ms(interval_ms), _cb(cb)
 {
+    DCHECK_GE(_interval_ms, 0);
     CHECK_EQ_MSG(
         TASK_TYPE_COMPUTE,
         spec().type,
@@ -444,9 +445,10 @@ timer_task::timer_task(
 }
 
 timer_task::timer_task(
-    task_code code, task_handler &&cb, int interval_milliseconds, int hash, service_node *node)
-    : task(code, hash, node), _interval_milliseconds(interval_milliseconds), _cb(std::move(cb))
+    task_code code, task_handler &&cb, int interval_ms, int hash, service_node *node)
+    : task(code, hash, node), _interval_ms(interval_ms), _cb(std::move(cb))
 {
+    DCHECK_GE(_interval_ms, 0);
     CHECK_EQ_MSG(
         TASK_TYPE_COMPUTE,
         spec().type,
@@ -458,7 +460,7 @@ void timer_task::enqueue()
 {
     // enable timer randomization to avoid lots of timers execution simultaneously
     if (delay_milliseconds() == 0 && spec().randomize_timer_delay_if_zero) {
-        set_delay(rand::next_u32(0, _interval_milliseconds));
+        set_delay(rand::next_u32(0, _interval_ms));
     }
 
     return task::enqueue();
@@ -470,12 +472,19 @@ void timer_task::exec()
         _cb();
     }
     // valid interval, we reset task state to READY
-    if (dsn_likely(_interval_milliseconds > 0)) {
+    if (dsn_likely(_interval_ms > 0)) {
         CHECK(set_retry(true),
               "timer task set retry failed, with state = {}",
               enum_to_string(state()));
-        set_delay(_interval_milliseconds);
+        set_delay(_interval_ms);
     }
+}
+
+void timer_task::update_interval(int interval_ms)
+{
+    // Not allowed to set to 0 for periodical task.
+    CHECK_GE(interval_ms, 0);
+    _interval_ms = interval_ms;
 }
 
 } // namespace dsn

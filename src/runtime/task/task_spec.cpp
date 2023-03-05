@@ -29,12 +29,16 @@
 #include <array>
 
 #include "runtime/rpc/rpc_message.h"
+#include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/command_manager.h"
 #include "utils/threadpool_spec.h"
 #include "utils/smart_pointers.h"
 
 namespace dsn {
+namespace tools {
+DSN_DECLARE_bool(enable_udp);
+}
 
 constexpr int TASK_SPEC_STORE_CAPACITY = 512;
 
@@ -80,8 +84,8 @@ void task_spec::register_task_code(task_code code,
             enum_to_string(spec->type));
 
         if (spec->priority != pri) {
-            LOG_WARNING("overwrite priority for task %s from %s to %s",
-                        code.to_string(),
+            LOG_WARNING("overwrite priority for task {} from {} to {}",
+                        code,
                         enum_to_string(spec->priority),
                         enum_to_string(pri));
             spec->priority = pri;
@@ -89,10 +93,10 @@ void task_spec::register_task_code(task_code code,
 
         if (spec->pool_code != pool) {
             if (spec->pool_code != THREAD_POOL_INVALID) {
-                LOG_WARNING("overwrite default thread pool for task %s from %s to %s",
-                            code.to_string(),
-                            spec->pool_code.to_string(),
-                            pool.to_string());
+                LOG_WARNING("overwrite default thread pool for task {} from {} to {}",
+                            code,
+                            spec->pool_code,
+                            pool);
             }
             spec->pool_code = pool;
         }
@@ -219,37 +223,18 @@ bool task_spec::init()
 
         if (spec->rpc_request_throttling_mode != TM_NONE) {
             if (spec->type != TASK_TYPE_RPC_REQUEST) {
-                LOG_ERROR("%s: only rpc request type can have non TM_NONE throttling_mode",
-                          spec->name.c_str());
+                LOG_ERROR("{}: only rpc request type can have non TM_NONE throttling_mode",
+                          spec->name);
                 return false;
             }
         }
+
+        if (spec->rpc_call_channel == RPC_CHANNEL_UDP && !dsn::tools::FLAGS_enable_udp) {
+            LOG_ERROR("task rpc_call_channel RPC_CHANNEL_UCP need udp service, make sure "
+                      "[network].enable_udp");
+            return false;
+        }
     }
-
-    ::dsn::command_manager::instance().register_command(
-        {"task-code"},
-        "task-code - query task code containing any given keywords",
-        "task-code keyword1 keyword2 ...",
-        [](const std::vector<std::string> &args) {
-            std::stringstream ss;
-
-            for (int code = 0; code <= dsn::task_code::max(); code++) {
-                if (code == TASK_CODE_INVALID)
-                    continue;
-
-                std::string codes = dsn::task_code(code).to_string();
-                if (args.size() == 0) {
-                    ss << "    " << codes << std::endl;
-                } else {
-                    for (auto &arg : args) {
-                        if (codes.find(arg.c_str()) != std::string::npos) {
-                            ss << "    " << codes << std::endl;
-                        }
-                    }
-                }
-            }
-            return ss.str();
-        });
 
     return true;
 }

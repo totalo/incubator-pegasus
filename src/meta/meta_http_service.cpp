@@ -40,6 +40,9 @@
 #include "meta/meta_bulk_load_service.h"
 
 namespace dsn {
+namespace dist {
+DSN_DECLARE_string(hosts_list);
+} // namespace dist
 namespace replication {
 
 struct list_nodes_helper
@@ -71,8 +74,8 @@ void meta_http_service::get_app_handler(const http_request &req, http_response &
     if (!redirect_if_not_primary(req, resp))
         return;
 
-    configuration_query_by_index_request request;
-    configuration_query_by_index_response response;
+    query_cfg_request request;
+    query_cfg_response response;
 
     request.app_name = app_name;
     _service->_state->query_configuration_by_index(request, response);
@@ -288,8 +291,8 @@ void meta_http_service::list_app_handler(const http_request &req, http_response 
             if (info.status != app_status::AS_AVAILABLE) {
                 continue;
             }
-            configuration_query_by_index_request request;
-            configuration_query_by_index_response response;
+            query_cfg_request request;
+            query_cfg_response response;
             request.app_name = info.app_name;
             _service->_state->query_configuration_by_index(request, response);
             CHECK_EQ(info.app_id, response.app_id);
@@ -381,8 +384,8 @@ void meta_http_service::list_node_handler(const http_request &req, http_response
         request.status = dsn::app_status::AS_AVAILABLE;
         _service->_state->list_apps(request, response);
         for (const auto &app : response.infos) {
-            configuration_query_by_index_request request_app;
-            configuration_query_by_index_response response_app;
+            query_cfg_request request_app;
+            query_cfg_response response_app;
             request_app.app_name = app.app_name;
             _service->_state->query_configuration_by_index(request_app, response_app);
             CHECK_EQ(app.app_id, response_app.app_id);
@@ -456,10 +459,7 @@ void meta_http_service::get_cluster_info_handler(const http_request &req, http_r
     }
     tp.add_row_name_and_data("meta_servers", meta_servers_str);
     tp.add_row_name_and_data("primary_meta_server", dsn_primary_address().to_std_string());
-    std::string zk_hosts =
-        dsn_config_get_value_string("zookeeper", "hosts_list", "", "zookeeper_hosts");
-    zk_hosts.erase(std::remove_if(zk_hosts.begin(), zk_hosts.end(), ::isspace), zk_hosts.end());
-    tp.add_row_name_and_data("zookeeper_hosts", zk_hosts);
+    tp.add_row_name_and_data("zookeeper_hosts", dsn::dist::FLAGS_hosts_list);
     tp.add_row_name_and_data("zookeeper_root", _service->_cluster_root);
     tp.add_row_name_and_data(
         "meta_function_level",
@@ -591,7 +591,7 @@ void meta_http_service::query_duplication_handler(const http_request &req, http_
         return;
     }
     if (_service->_dup_svc == nullptr) {
-        resp.body = "duplication is not enabled [duplication_enabled=false]";
+        resp.body = "duplication is not enabled [FLAGS_duplication_enabled=false]";
         resp.status_code = http_status_code::not_found;
         return;
     }

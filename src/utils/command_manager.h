@@ -30,6 +30,7 @@
 
 #include "utils/api_utilities.h"
 #include "utils/autoref_ptr.h"
+#include "utils/fmt_logging.h"
 #include "utils/ports.h"
 #include "utils/singleton.h"
 #include "utils/synchronize.h"
@@ -43,11 +44,11 @@ class command_manager : public ::dsn::utils::singleton<command_manager>
 public:
     typedef std::function<std::string(const std::vector<std::string> &)> command_handler;
 
-    // TODO(yingchun): add __attribute__((warn_unused_result)) in future refactor
-    std::unique_ptr<command_deregister> register_command(const std::vector<std::string> &commands,
-                                                         const std::string &help_one_line,
-                                                         const std::string &help_long,
-                                                         command_handler handler);
+    std::unique_ptr<command_deregister>
+    register_command(const std::vector<std::string> &commands,
+                     const std::string &help_one_line,
+                     const std::string &help_long,
+                     command_handler handler) WARN_UNUSED_RESULT;
 
     bool run_command(const std::string &cmd,
                      const std::vector<std::string> &args,
@@ -107,10 +108,10 @@ inline std::string remote_command_set_bool_flag(bool &flag,
     } else {
         if (args[0] == "true") {
             flag = true;
-            LOG_INFO("set %s to true by remote command", flag_name);
+            LOG_INFO("set {} to true by remote command", flag_name);
         } else if (args[0] == "false") {
             flag = false;
-            LOG_INFO("set %s to false by remote command", flag_name);
+            LOG_INFO("set {} to false by remote command", flag_name);
         } else {
             ret_msg = "ERR: invalid arguments";
         }

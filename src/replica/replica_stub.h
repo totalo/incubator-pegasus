@@ -230,6 +230,8 @@ public:
     // query last checkpoint info for follower in duplication process
     void on_query_last_checkpoint(query_last_checkpoint_info_rpc rpc);
 
+    void update_config(const std::string &name);
+
 private:
     enum replica_node_state
     {
@@ -335,6 +337,7 @@ private:
     friend class open_replica_test;
     friend class replica_follower;
     friend class replica_follower_test;
+    friend class replica_http_service_test;
 
     typedef std::unordered_map<gpid, ::dsn::task_ptr> opening_replicas;
     typedef std::unordered_map<gpid, std::tuple<task_ptr, replica_ptr, app_info, replica_info>>
@@ -363,7 +366,7 @@ private:
 
     // temproal states
     ::dsn::task_ptr _config_query_task;
-    ::dsn::task_ptr _config_sync_timer_task;
+    ::dsn::timer_task_ptr _config_sync_timer_task;
     ::dsn::task_ptr _gc_timer_task;
     ::dsn::task_ptr _disk_stat_timer_task;
     ::dsn::task_ptr _mem_release_timer_task;
@@ -394,9 +397,6 @@ private:
 
     // nfs_node
     std::unique_ptr<dsn::nfs_node> _nfs;
-
-    // write body size exceed this threshold will be logged and reject, 0 means no check
-    uint64_t _max_allowed_write_size;
 
     // replica count executing bulk load downloading concurrently
     std::atomic_int _bulk_load_downloading_count;

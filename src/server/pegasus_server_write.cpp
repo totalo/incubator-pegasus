@@ -29,9 +29,10 @@
 
 namespace pegasus {
 namespace server {
+DSN_DECLARE_bool(rocksdb_verbose_log);
 
-pegasus_server_write::pegasus_server_write(pegasus_server_impl *server, bool verbose_log)
-    : replica_base(server), _write_svc(new pegasus_write_service(server)), _verbose_log(verbose_log)
+pegasus_server_write::pegasus_server_write(pegasus_server_impl *server)
+    : replica_base(server), _write_svc(new pegasus_write_service(server))
 {
     char name[256];
     snprintf(name, 255, "recent_corrupt_write_count@%s", get_gpid().to_string());
@@ -103,9 +104,9 @@ int pegasus_server_write::on_batched_writes(dsn::message_ex **requests, int coun
                 } else {
                     if (_non_batch_write_handlers.find(rpc_code) !=
                         _non_batch_write_handlers.end()) {
-                        LOG_FATAL_F("rpc code not allow batch: {}", rpc_code.to_string());
+                        LOG_FATAL("rpc code not allow batch: {}", rpc_code.to_string());
                     } else {
-                        LOG_FATAL_F("rpc code not handled: {}", rpc_code.to_string());
+                        LOG_FATAL("rpc code not handled: {}", rpc_code.to_string());
                     }
                 }
             } catch (TTransportException &ex) {
@@ -146,7 +147,7 @@ void pegasus_server_write::request_key_check(int64_t decree,
         CHECK_EQ_MSG(msg->header->client.thread_hash, thread_hash, "inconsistent thread hash");
     }
 
-    if (_verbose_log) {
+    if (FLAGS_rocksdb_verbose_log) {
         ::dsn::blob hash_key, sort_key;
         pegasus_restore_key(key, hash_key, sort_key);
 

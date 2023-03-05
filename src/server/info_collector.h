@@ -32,7 +32,7 @@
 #include "runtime/rpc/rpc_stream.h"
 #include "runtime/serverlet.h"
 #include "runtime/service_app.h"
-#include "utils/rpc_address.h"
+#include "runtime/rpc/rpc_address.h"
 #include "common/replication_other_types.h"
 #include "common/replication.codes.h"
 #include "common/replication_other_types.h"
@@ -225,22 +225,17 @@ private:
     ::dsn::rpc_address _meta_servers;
     std::string _cluster_name;
     std::shared_ptr<shell_context> _shell_context;
-    uint32_t _app_stat_interval_seconds;
     ::dsn::task_ptr _app_stat_timer_task;
     ::dsn::utils::ex_lock_nr _app_stat_counter_lock;
     std::map<std::string, app_stat_counters *> _app_stat_counters;
 
-    // app for recording usage statistics, including read/write capacity unit and storage size.
-    std::string _usage_stat_app;
     // client to access server.
     pegasus_client *_client;
     // for writing cu stat result
     std::unique_ptr<result_writer> _result_writer;
-    uint32_t _capacity_unit_fetch_interval_seconds;
     uint32_t _capacity_unit_retry_wait_seconds;
     uint32_t _capacity_unit_retry_max_count;
     ::dsn::task_ptr _capacity_unit_stat_timer_task;
-    uint32_t _storage_size_fetch_interval_seconds;
     uint32_t _storage_size_retry_wait_seconds;
     uint32_t _storage_size_retry_max_count;
     ::dsn::task_ptr _storage_size_stat_timer_task;

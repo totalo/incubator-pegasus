@@ -32,73 +32,138 @@
                 __FILENAME__, __FUNCTION__, __LINE__, level, fmt::format(__VA_ARGS__).c_str());    \
     } while (false)
 
-#define LOG_DEBUG_F(...) dlog_f(LOG_LEVEL_DEBUG, __VA_ARGS__)
-#define LOG_INFO_F(...) dlog_f(LOG_LEVEL_INFO, __VA_ARGS__)
-#define LOG_WARNING_F(...) dlog_f(LOG_LEVEL_WARNING, __VA_ARGS__)
-#define LOG_ERROR_F(...) dlog_f(LOG_LEVEL_ERROR, __VA_ARGS__)
-#define LOG_FATAL_F(...) dlog_f(LOG_LEVEL_FATAL, __VA_ARGS__)
+#define LOG_DEBUG(...) dlog_f(LOG_LEVEL_DEBUG, __VA_ARGS__)
+#define LOG_INFO(...) dlog_f(LOG_LEVEL_INFO, __VA_ARGS__)
+#define LOG_WARNING(...) dlog_f(LOG_LEVEL_WARNING, __VA_ARGS__)
+#define LOG_ERROR(...) dlog_f(LOG_LEVEL_ERROR, __VA_ARGS__)
+#define LOG_FATAL(...) dlog_f(LOG_LEVEL_FATAL, __VA_ARGS__)
 
-#define CHECK(x, ...)                                                                              \
+#define CHECK_EXPRESSION(expression, evaluation, ...)                                              \
     do {                                                                                           \
-        if (dsn_unlikely(!(x))) {                                                                  \
-            dlog_f(LOG_LEVEL_FATAL, "assertion expression: " #x);                                  \
+        if (dsn_unlikely(!(evaluation))) {                                                         \
+            dlog_f(LOG_LEVEL_FATAL, "assertion expression: " #expression);                         \
             dlog_f(LOG_LEVEL_FATAL, __VA_ARGS__);                                                  \
             dsn_coredump();                                                                        \
         }                                                                                          \
     } while (false)
 
+#define CHECK(x, ...) CHECK_EXPRESSION(x, x, __VA_ARGS__)
 #define CHECK_NOTNULL(p, ...) CHECK(p != nullptr, __VA_ARGS__)
 
 // Macros for writing log message prefixed by log_prefix().
-#define LOG_DEBUG_PREFIX(...) LOG_DEBUG_F("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
-#define LOG_INFO_PREFIX(...) LOG_INFO_F("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
-#define LOG_WARNING_PREFIX(...) LOG_WARNING_F("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
-#define LOG_ERROR_PREFIX(...) LOG_ERROR_F("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
-#define LOG_FATAL_PREFIX(...) LOG_FATAL_F("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
+#define LOG_DEBUG_PREFIX(...) LOG_DEBUG("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
+#define LOG_INFO_PREFIX(...) LOG_INFO("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
+#define LOG_WARNING_PREFIX(...) LOG_WARNING("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
+#define LOG_ERROR_PREFIX(...) LOG_ERROR("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
+#define LOG_FATAL_PREFIX(...) LOG_FATAL("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
+
+namespace {
+
+inline const char *null_str_printer(const char *s) { return s == nullptr ? "(null)" : s; }
+
+} // anonymous namespace
 
 // Macros to check expected condition. It will abort the application
 // and log a fatal message when the condition is not met.
+
+#define CHECK_STREQ_MSG(var1, var2, ...)                                                           \
+    do {                                                                                           \
+        const auto &_v1 = (var1);                                                                  \
+        const auto &_v2 = (var2);                                                                  \
+        CHECK_EXPRESSION(var1 == var2,                                                             \
+                         dsn::utils::equals(_v1, _v2),                                             \
+                         "{} vs {} {}",                                                            \
+                         null_str_printer(_v1),                                                    \
+                         null_str_printer(_v2),                                                    \
+                         fmt::format(__VA_ARGS__));                                                \
+    } while (false)
+
+#define CHECK_STRNE_MSG(var1, var2, ...)                                                           \
+    do {                                                                                           \
+        const auto &_v1 = (var1);                                                                  \
+        const auto &_v2 = (var2);                                                                  \
+        CHECK_EXPRESSION(var1 != var2,                                                             \
+                         !dsn::utils::equals(_v1, _v2),                                            \
+                         "{} vs {} {}",                                                            \
+                         null_str_printer(_v1),                                                    \
+                         null_str_printer(_v2),                                                    \
+                         fmt::format(__VA_ARGS__));                                                \
+    } while (false)
+
+#define CHECK_STRCASEEQ_MSG(var1, var2, ...)                                                       \
+    do {                                                                                           \
+        const auto &_v1 = (var1);                                                                  \
+        const auto &_v2 = (var2);                                                                  \
+        CHECK_EXPRESSION(var1 == var2,                                                             \
+                         dsn::utils::iequals(_v1, _v2),                                            \
+                         "{} vs {} {}",                                                            \
+                         null_str_printer(_v1),                                                    \
+                         null_str_printer(_v2),                                                    \
+                         fmt::format(__VA_ARGS__));                                                \
+    } while (false)
+
+#define CHECK_STRCASENE_MSG(var1, var2, ...)                                                       \
+    do {                                                                                           \
+        const auto &_v1 = (var1);                                                                  \
+        const auto &_v2 = (var2);                                                                  \
+        CHECK_EXPRESSION(var1 != var2,                                                             \
+                         !dsn::utils::iequals(_v1, _v2),                                           \
+                         "{} vs {} {}",                                                            \
+                         null_str_printer(_v1),                                                    \
+                         null_str_printer(_v2),                                                    \
+                         fmt::format(__VA_ARGS__));                                                \
+    } while (false)
+
 #define CHECK_NE_MSG(var1, var2, ...)                                                              \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK(_v1 != _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));                      \
+        CHECK_EXPRESSION(                                                                          \
+            var1 != var2, _v1 != _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_EQ_MSG(var1, var2, ...)                                                              \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK(_v1 == _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));                      \
+        CHECK_EXPRESSION(                                                                          \
+            var1 == var2, _v1 == _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_GE_MSG(var1, var2, ...)                                                              \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK(_v1 >= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));                      \
+        CHECK_EXPRESSION(                                                                          \
+            var1 >= var2, _v1 >= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_LE_MSG(var1, var2, ...)                                                              \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK(_v1 <= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));                      \
+        CHECK_EXPRESSION(                                                                          \
+            var1 <= var2, _v1 <= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_GT_MSG(var1, var2, ...)                                                              \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK(_v1 > _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));                       \
+        CHECK_EXPRESSION(                                                                          \
+            var1 > var2, _v1 > _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));            \
     } while (false)
 
 #define CHECK_LT_MSG(var1, var2, ...)                                                              \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK(_v1 < _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));                       \
+        CHECK_EXPRESSION(                                                                          \
+            var1 < var2, _v1 < _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));            \
     } while (false)
+
+#define CHECK_STREQ(var1, var2) CHECK_STREQ_MSG(var1, var2, "")
+#define CHECK_STRNE(var1, var2) CHECK_STRNE_MSG(var1, var2, "")
 
 #define CHECK_NE(var1, var2) CHECK_NE_MSG(var1, var2, "")
 #define CHECK_EQ(var1, var2) CHECK_EQ_MSG(var1, var2, "")
@@ -107,52 +172,63 @@
 #define CHECK_GT(var1, var2) CHECK_GT_MSG(var1, var2, "")
 #define CHECK_LT(var1, var2) CHECK_LT_MSG(var1, var2, "")
 
+#define CHECK_TRUE(var) CHECK_EQ(var, true)
+#define CHECK_FALSE(var) CHECK_EQ(var, false)
+
 // TODO(yingchun): add CHECK_NULL(ptr), CHECK_OK(err), CHECK(cond)
 
-#define CHECK_PREFIX_MSG(x, ...) CHECK(x, "[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
-#define CHECK_NOTNULL_PREFIX_MSG(p, ...) CHECK_PREFIX_MSG(p != nullptr, fmt::format(__VA_ARGS__))
+#define CHECK_EXPRESSION_PREFIX_MSG(expression, evaluation, ...)                                   \
+    CHECK_EXPRESSION(expression, evaluation, "[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
+#define CHECK_PREFIX_MSG(x, ...) CHECK_EXPRESSION_PREFIX_MSG(x, x, __VA_ARGS__)
+#define CHECK_NOTNULL_PREFIX_MSG(p, ...) CHECK_PREFIX_MSG(p != nullptr, __VA_ARGS__)
 #define CHECK_NOTNULL_PREFIX(p) CHECK_NOTNULL_PREFIX_MSG(p, "")
 
 #define CHECK_NE_PREFIX_MSG(var1, var2, ...)                                                       \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK_PREFIX_MSG(_v1 != _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));           \
+        CHECK_EXPRESSION_PREFIX_MSG(                                                               \
+            var1 != var2, _v1 != _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_EQ_PREFIX_MSG(var1, var2, ...)                                                       \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK_PREFIX_MSG(_v1 == _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));           \
+        CHECK_EXPRESSION_PREFIX_MSG(                                                               \
+            var1 == var2, _v1 == _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_GE_PREFIX_MSG(var1, var2, ...)                                                       \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK_PREFIX_MSG(_v1 >= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));           \
+        CHECK_EXPRESSION_PREFIX_MSG(                                                               \
+            var1 >= var2, _v1 >= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_LE_PREFIX_MSG(var1, var2, ...)                                                       \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK_PREFIX_MSG(_v1 <= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));           \
+        CHECK_EXPRESSION_PREFIX_MSG(                                                               \
+            var1 <= var2, _v1 <= _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));          \
     } while (false)
 
 #define CHECK_GT_PREFIX_MSG(var1, var2, ...)                                                       \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK_PREFIX_MSG(_v1 > _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));            \
+        CHECK_EXPRESSION_PREFIX_MSG(                                                               \
+            var1 > var2, _v1 > _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));            \
     } while (false)
 
 #define CHECK_LT_PREFIX_MSG(var1, var2, ...)                                                       \
     do {                                                                                           \
         const auto &_v1 = (var1);                                                                  \
         const auto &_v2 = (var2);                                                                  \
-        CHECK_PREFIX_MSG(_v1 < _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));            \
+        CHECK_EXPRESSION_PREFIX_MSG(                                                               \
+            var1 < var2, _v1 < _v2, "{} vs {} {}", _v1, _v2, fmt::format(__VA_ARGS__));            \
     } while (false)
 
 #define CHECK_PREFIX(x) CHECK_PREFIX_MSG(x, "")
@@ -167,7 +243,7 @@
 #define ERR_LOG_AND_RETURN_NOT_TRUE(s, err, ...)                                                   \
     do {                                                                                           \
         if (dsn_unlikely(!(s))) {                                                                  \
-            LOG_ERROR_F("{}: {}", err, fmt::format(__VA_ARGS__));                                  \
+            LOG_ERROR("{}: {}", err, fmt::format(__VA_ARGS__));                                    \
             return err;                                                                            \
         }                                                                                          \
     } while (0)

@@ -30,7 +30,7 @@
 
 #include "utils/synchronize.h"
 #include "runtime/rpc/message_parser.h"
-#include "utils/rpc_address.h"
+#include "rpc_address.h"
 #include "utils/exp_delay.h"
 #include "perf_counter/perf_counter_wrapper.h"
 #include <atomic>
@@ -137,7 +137,6 @@ protected:
     network_header_format _unknown_msg_header_format; // default is NET_HDR_INVALID
     int _message_buffer_block_size;
     int _max_buffer_block_count_per_send;
-    int _send_queue_threshold;
 
 private:
     friend class rpc_engine;
@@ -186,7 +185,6 @@ protected:
     ip_connection_count _ip_conn_count; // from_ip => connection count
     utils::rw_lock_nr _servers_lock;
 
-    uint32_t _cfg_conn_threshold_per_ip;
     perf_counter_wrapper _client_session_count;
 };
 
