@@ -24,21 +24,19 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     Unit-test for perf_counters.
- *
- * Revision history:
- *     Nov., 2015, @qinzuoyan (Zuoyan Qin), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #include "perf_counter/perf_counters.h"
-#include "perf_counter/perf_counter_wrapper.h"
-#include "perf_counter/perf_counter_utils.h"
-#include <gtest/gtest.h>
 
-using namespace ::dsn;
+#include <stdio.h>
+#include <map>
+
+#include "common/json_helper.h"
+#include "gtest/gtest.h"
+#include "perf_counter/perf_counter.h"
+#include "perf_counter/perf_counter_utils.h"
+#include "perf_counter/perf_counter_wrapper.h"
+#include "utils/blob.h"
+
+namespace dsn {
 
 TEST(perf_counters_test, counter_create_remove)
 {
@@ -347,3 +345,4 @@ TEST(perf_counters_test, get_by_fullname)
         }
     }
 }
+} // namespace dsn

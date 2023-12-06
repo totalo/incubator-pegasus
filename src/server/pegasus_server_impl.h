@@ -19,26 +19,66 @@
 
 #pragma once
 
-#include <vector>
-#include <rocksdb/db.h>
-#include <rocksdb/table.h>
-#include <rocksdb/listener.h>
-#include <rocksdb/options.h>
-#include "perf_counter/perf_counter_wrapper.h"
-#include "common/replication.codes.h"
-#include "utils/flags.h"
-#include <rrdb/rrdb_types.h>
 #include <gtest/gtest_prod.h>
-#include <rocksdb/rate_limiter.h>
+#include <rocksdb/compression_type.h>
+#include <rocksdb/options.h>
+#include <rocksdb/slice.h>
+#include <rocksdb/table.h>
+#include <rrdb/rrdb_types.h>
+#include <stdint.h>
+#include <atomic>
+#include <chrono>
+#include <deque>
+#include <map>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-#include "key_ttl_compaction_filter.h"
-#include "pegasus_scan_context.h"
+#include "bulk_load_types.h"
+#include "common/gpid.h"
+#include "metadata_types.h"
 #include "pegasus_manual_compact_service.h"
-#include "pegasus_write_service.h"
-#include "range_read_limiter.h"
 #include "pegasus_read_service.h"
+#include "pegasus_scan_context.h"
+#include "pegasus_utils.h"
+#include "pegasus_value_schema.h"
+#include "perf_counter/perf_counter_wrapper.h"
+#include "range_read_limiter.h"
+#include "replica/replication_app_base.h"
+#include "runtime/task/task.h"
+#include "runtime/task/task_tracker.h"
+#include "utils/error_code.h"
+#include "utils/flags.h"
+#include "utils/rand.h"
+#include "utils/synchronize.h"
+
+namespace pegasus {
+namespace server {
+class KeyWithTTLCompactionFilterFactory;
+} // namespace server
+} // namespace pegasus
+namespace rocksdb {
+class Cache;
+class ColumnFamilyHandle;
+class DB;
+class RateLimiter;
+class Statistics;
+class WriteBufferManager;
+} // namespace rocksdb
 
 namespace dsn {
+class blob;
+class message_ex;
+
+namespace replication {
+class detect_hotkey_request;
+class detect_hotkey_response;
+class learn_state;
+class replica;
+} // namespace replication
+
 namespace utils {
 class token_bucket_throttling_controller;
 } // namespace utils
@@ -54,10 +94,10 @@ DSN_DECLARE_uint64(rocksdb_abnormal_get_size_threshold);
 DSN_DECLARE_uint64(rocksdb_abnormal_multi_get_iterate_count_threshold);
 DSN_DECLARE_uint64(rocksdb_abnormal_multi_get_size_threshold);
 
-class meta_store;
 class capacity_unit_calculator;
-class pegasus_server_write;
 class hotkey_collector;
+class meta_store;
+class pegasus_server_write;
 
 enum class range_iteration_state
 {
@@ -184,8 +224,6 @@ public:
 
     int64_t last_durable_decree() const override { return _last_durable_decree.load(); }
 
-    int64_t last_flushed_decree() const override;
-
     void update_app_envs(const std::map<std::string, std::string> &envs) override;
 
     void query_app_envs(/*out*/ std::map<std::string, std::string> &envs) override;
@@ -293,6 +331,10 @@ private:
 
     void update_user_specified_compaction(const std::map<std::string, std::string> &envs);
 
+    void update_rocksdb_dynamic_options(const std::map<std::string, std::string> &envs);
+
+    void set_rocksdb_options_before_creating(const std::map<std::string, std::string> &envs);
+
     void update_throttling_controller(const std::map<std::string, std::string> &envs);
 
     bool parse_allow_ingest_behind(const std::map<std::string, std::string> &envs);
@@ -323,6 +365,16 @@ private:
 
     void reset_usage_scenario_options(const rocksdb::ColumnFamilyOptions &base_opts,
                                       rocksdb::ColumnFamilyOptions *target_opts);
+
+    void reset_allow_ingest_behind_option(const rocksdb::DBOptions &base_db_opt,
+                                          const std::map<std::string, std::string> &envs,
+                                          rocksdb::DBOptions *target_db_opt);
+
+    void reset_rocksdb_options(const rocksdb::ColumnFamilyOptions &base_cf_opts,
+                               const rocksdb::DBOptions &base_db_opt,
+                               const std::map<std::string, std::string> &envs,
+                               rocksdb::ColumnFamilyOptions *target_cf_opts,
+                               rocksdb::DBOptions *target_db_opt);
 
     // return true if successfully set
     bool set_options(const std::unordered_map<std::string, std::string> &new_options);
@@ -433,6 +485,7 @@ private:
     // Dynamically calculate the value of current data_cf option according to the conf module file
     // and usage scenario
     rocksdb::ColumnFamilyOptions _table_data_cf_opts;
+    rocksdb::BlockBasedTableOptions _tbl_opts;
     rocksdb::ColumnFamilyOptions _meta_cf_opts;
     rocksdb::ReadOptions _data_cf_rd_opts;
     std::string _usage_scenario;

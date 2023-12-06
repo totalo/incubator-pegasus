@@ -30,17 +30,15 @@
 #include <ifaddrs.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <string.h>
 #include <sys/socket.h>
 
-#include <thrift/protocol/TProtocol.h>
-
 #include "runtime/rpc/group_address.h"
-#include "utils/api_utilities.h"
 #include "utils/fixed_size_buffer_pool.h"
+#include "utils/fmt_logging.h"
 #include "utils/ports.h"
-#include "utils/safe_strerror_posix.h"
 #include "utils/string_conv.h"
-#include "utils/string_view.h"
+#include "absl/strings/string_view.h"
 #include "utils/strings.h"
 
 namespace dsn {
@@ -82,7 +80,7 @@ bool rpc_address::is_site_local_address(uint32_t ip_net)
 /*static*/
 bool rpc_address::is_docker_netcard(const char *netcard_interface, uint32_t ip_net)
 {
-    if (string_view(netcard_interface).find("docker") != string_view::npos) {
+    if (absl::string_view(netcard_interface).find("docker") != absl::string_view::npos) {
         return true;
     }
     uint32_t iphost = ntohl(ip_net);
@@ -242,4 +240,13 @@ const char *rpc_address::to_string() const
 
     return (const char *)p;
 }
+
+rpc_address::rpc_address(const struct sockaddr_in &addr)
+{
+    set_invalid();
+    _addr.v4.type = HOST_TYPE_IPV4;
+    _addr.v4.ip = static_cast<uint32_t>(ntohl(addr.sin_addr.s_addr));
+    _addr.v4.port = ntohs(addr.sin_port);
+}
+
 } // namespace dsn

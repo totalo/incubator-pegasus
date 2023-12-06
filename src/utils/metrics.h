@@ -17,12 +17,18 @@
 
 #pragma once
 
+#include <boost/asio/deadline_timer.hpp>
+#include <boost/asio/detail/impl/epoll_reactor.hpp>
+#include <boost/asio/detail/impl/timer_queue_ptime.ipp>
+#include <rapidjson/ostreamwrapper.h>
+#include <stddef.h>
 #include <algorithm>
 #include <atomic>
 #include <bitset>
+#include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
+#include <new>
 #include <set>
 #include <sstream>
 #include <string>
@@ -32,23 +38,26 @@
 #include <utility>
 #include <vector>
 
-#include <boost/asio/deadline_timer.hpp>
-
 #include "common/json_helper.h"
 #include "http/http_server.h"
-#include "utils/api_utilities.h"
 #include "utils/alloc.h"
 #include "utils/autoref_ptr.h"
 #include "utils/casts.h"
 #include "utils/enum_helper.h"
 #include "utils/fmt_logging.h"
 #include "utils/long_adder.h"
+#include "utils/macros.h"
 #include "utils/nth_element.h"
 #include "utils/ports.h"
 #include "utils/singleton.h"
-#include "utils/string_view.h"
-#include "utils/strings.h"
+#include "absl/strings/string_view.h"
 #include "utils/synchronize.h"
+
+namespace boost {
+namespace system {
+class error_code;
+} // namespace system
+} // namespace boost
 
 // A metric library (for details pls see https://github.com/apache/incubator-pegasus/issues/922)
 // inspired by Kudu metrics (https://github.com/apache/kudu/blob/master/src/kudu/util/metrics.h).
@@ -134,12 +143,12 @@
     extern dsn::floating_percentile_prototype<double> METRIC_##name
 
 namespace dsn {
+class metric;                  // IWYU pragma: keep
+class metric_entity_prototype; // IWYU pragma: keep
+class metric_prototype;        // IWYU pragma: keep
+struct metric_filters;         // IWYU pragma: keep
 
-class metric_prototype;
-class metric;
 using metric_ptr = ref_ptr<metric>;
-struct metric_filters;
-class metric_entity_prototype;
 
 using metric_json_writer = dsn::json::PrettyJsonWriter;
 
@@ -352,7 +361,8 @@ private:
     DISALLOW_COPY_AND_ASSIGN(metric_entity_prototype);
 };
 
-class metric_registry;
+class metric_registry; // IWYU pragma: keep
+
 class metrics_http_service : public http_server_base
 {
 public:
@@ -566,22 +576,22 @@ class metric_prototype
 public:
     struct ctor_args
     {
-        const string_view entity_type;
+        const absl::string_view entity_type;
         const metric_type type;
-        const string_view name;
+        const absl::string_view name;
         const metric_unit unit;
-        const string_view desc;
+        const absl::string_view desc;
     };
 
-    string_view entity_type() const { return _args.entity_type; }
+    absl::string_view entity_type() const { return _args.entity_type; }
 
     metric_type type() const { return _args.type; }
 
-    string_view name() const { return _args.name; }
+    absl::string_view name() const { return _args.name; }
 
     metric_unit unit() const { return _args.unit; }
 
-    string_view description() const { return _args.desc; }
+    absl::string_view description() const { return _args.desc; }
 
 protected:
     explicit metric_prototype(const ctor_args &args);
@@ -964,8 +974,6 @@ struct kth_percentile_property
     double decimal;
 };
 
-#define STRINGIFY_HELPER(x) #x
-#define STRINGIFY(x) STRINGIFY_HELPER(x)
 #define STRINGIFY_KTH_PERCENTILE_NAME(kth) STRINGIFY(KTH_PERCENTILE_NAME(kth))
 #define KTH_TO_DECIMAL(kth) 0.##kth
 #define KTH_PERCENTILE_PROPERTY_LIST(kth)                                                          \

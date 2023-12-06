@@ -15,15 +15,42 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <boost/lexical_cast.hpp>
-#include "block_service/block_service.h"
-#include "utils/fmt_logging.h"
-#include "utils/filesystem.h"
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <string>
+#include <type_traits>
+#include <utility>
+#include <vector>
 
+#include "backup_types.h"
+#include "block_service/block_service.h"
 #include "block_service/block_service_manager.h"
 #include "common/backup_common.h"
+#include "common/gpid.h"
+#include "common/json_helper.h"
+#include "common/replication.codes.h"
+#include "dsn.layer2_types.h"
+#include "meta/meta_data.h"
+#include "meta/meta_rpc_types.h"
+#include "meta_admin_types.h"
 #include "meta_service.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/task/task.h"
+#include "runtime/task/task_code.h"
 #include "server_state.h"
+#include "utils/autoref_ptr.h"
+#include "utils/blob.h"
+#include "utils/error_code.h"
+#include "utils/filesystem.h"
+#include "utils/fmt_logging.h"
+#include "utils/zlocks.h"
 
 using namespace dsn::dist::block_service;
 
@@ -212,30 +239,25 @@ void server_state::on_query_restore_status(configuration_query_restore_rpc rpc)
     response.err = ERR_OK;
 
     std::shared_ptr<app_state> app = get_app(request.restore_app_id);
-    if (app == nullptr) {
-        response.err = ERR_APP_NOT_EXIST;
-    } else {
-        if (app->status == app_status::AS_DROPPED) {
-            response.err = ERR_APP_DROPPED;
-        } else {
-            response.restore_progress.resize(app->partition_count,
-                                             cold_backup_constant::PROGRESS_FINISHED);
-            response.restore_status.resize(app->partition_count, ERR_OK);
-            for (int32_t i = 0; i < app->partition_count; i++) {
-                const auto &r_state = app->helpers->restore_states[i];
-                const auto &p = app->partitions[i];
-                if (!p.primary.is_invalid() || !p.secondaries.empty()) {
-                    // already have primary, restore succeed
-                    continue;
-                } else {
-                    if (r_state.progress < response.restore_progress[i]) {
-                        response.restore_progress[i] = r_state.progress;
-                    }
-                }
-                response.restore_status[i] = r_state.restore_status;
-            }
+    CHECK(app, "app must be valid");
+    if (app->status == app_status::AS_DROPPED) {
+        response.err = ERR_APP_DROPPED;
+        return;
+    }
+    response.restore_progress.resize(app->partition_count, cold_backup_constant::PROGRESS_FINISHED);
+    response.restore_status.resize(app->partition_count, ERR_OK);
+    for (int32_t i = 0; i < app->partition_count; i++) {
+        const auto &r_state = app->helpers->restore_states[i];
+        const auto &p = app->partitions[i];
+        if (!p.primary.is_invalid() || !p.secondaries.empty()) {
+            // already have primary, restore succeed
+            continue;
         }
+        if (r_state.progress < response.restore_progress[i]) {
+            response.restore_progress[i] = r_state.progress;
+        }
+        response.restore_status[i] = r_state.restore_status;
     }
 }
-}
-}
+} // namespace replication
+} // namespace dsn

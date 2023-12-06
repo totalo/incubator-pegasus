@@ -24,17 +24,16 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     the meta server's options, impl file
- *
- * Revision history:
- *     2016-04-25, Weijie Sun(sunweijie at xiaomi.com), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
 #include "meta_options.h"
 
+#include <stddef.h>
+#include <map>
+#include <utility>
+
+#include "common/replication_enums.h" // IWYU pragma: keep
 #include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/strings.h"
 
 namespace dsn {
 namespace replication {

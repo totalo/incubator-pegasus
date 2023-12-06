@@ -25,7 +25,12 @@
  */
 
 #include "mutation_cache.h"
+
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include "consensus_types.h"
 #include "mutation.h"
+#include "utils/autoref_ptr.h"
+#include "utils/fmt_logging.h"
 
 namespace dsn {
 namespace replication {

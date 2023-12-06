@@ -42,7 +42,6 @@ set(MY_PROJ_LIBS
         dsn_replication_common
         dsn.block_service
         dsn.block_service.local
-        dsn.block_service.fds
         dsn.block_service.hdfs
         dsn.failure_detector
         dsn_dist_cmd
@@ -52,17 +51,10 @@ set(MY_PROJ_LIBS
         dsn_aio
         zookeeper
         hashtable
-        galaxy-fds-sdk-cpp
-        PocoNet
-        PocoFoundation
-        PocoNetSSL
-        PocoJSON
-        crypto
         gtest
-        ssl
         hdfs)
 
-set(MY_BOOST_LIBS Boost::system Boost::filesystem Boost::regex)
+set(MY_BOOST_LIBS Boost::system Boost::filesystem)
 
 # Extra files that will be installed
 set(MY_BINPLACES clear.sh run.sh config-test.ini suite1 suite2)

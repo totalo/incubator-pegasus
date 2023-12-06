@@ -25,9 +25,17 @@
  */
 
 #include "runtime/message_utils.h"
+
+#include <string>
+#include <utility>
+
 #include "common/replication.codes.h"
+#include "dsn.layer2_types.h"
+#include "gtest/gtest.h"
 #include "runtime/rpc/rpc_holder.h"
-#include <gtest/gtest.h>
+#include "runtime/rpc/rpc_message.h"
+#include "utils/autoref_ptr.h"
+#include "utils/threadpool_code.h"
 
 namespace dsn {
 

@@ -27,6 +27,8 @@ set(MY_PROJ_SRC "")
 set(MY_SRC_SEARCH_MODE "GLOB")
 
 set(MY_PROJ_LIBS pegasus.rproxylib
+                 absl::flat_hash_set
+                 absl::strings
                  pegasus_geo_lib
                  pegasus_reporter
                  event
@@ -36,7 +38,7 @@ set(MY_PROJ_LIBS pegasus.rproxylib
 
 set(MY_BINPLACES "config.ini")
 
-set(MY_BOOST_LIBS Boost::system Boost::filesystem Boost::regex)
+set(MY_BOOST_LIBS Boost::system Boost::filesystem)
 
 # Avoid megabytes of warnings like:
 # thirdparty/output/include/s2/s1angle.h:288:28: error:

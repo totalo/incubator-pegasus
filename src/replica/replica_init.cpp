@@ -24,17 +24,34 @@
  * THE SOFTWARE.
  */
 
-#include "replica.h"
+#include <inttypes.h>
+#include <chrono>
+#include <map>
+#include <memory>
+#include <string>
+
+#include "backup/replica_backup_manager.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
+#include "common/replication_other_types.h"
+#include "consensus_types.h"
+#include "dsn.layer2_types.h"
+#include "metadata_types.h"
 #include "mutation.h"
 #include "mutation_log.h"
-#include "replica_stub.h"
-#include "backup/replica_backup_manager.h"
-#include "duplication/replica_follower.h"
-#include "utils/factory_store.h"
-#include "utils/filesystem.h"
+#include "replica.h"
+#include "replica/prepare_list.h"
 #include "replica/replication_app_base.h"
+#include "replica_stub.h"
+#include "runtime/api_layer1.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/filesystem.h"
+#include "utils/flags.h"
 #include "utils/fmt_logging.h"
-#include "utils/fail_point.h"
+#include "utils/uniq_timestamp_us.h"
 
 namespace dsn {
 namespace replication {
@@ -51,16 +68,9 @@ DSN_DEFINE_int32(replication,
 
 error_code replica::initialize_on_new()
 {
-    // if (dsn::utils::filesystem::directory_exists(_dir) &&
-    //    !dsn::utils::filesystem::remove_path(_dir))
-    //{
-    //    LOG_ERROR("cannot allocate new replica @ {}, as the dir is already exists", _dir);
-    //    return ERR_PATH_ALREADY_EXIST;
-    //}
-    //
     // TODO: check if _dir contain other file or directory except for
-    // "restore.policy_name.backup_id"
-    // which is applied to restore from cold backup
+    // "restore.policy_name.backup_id" which is applied to restore from
+    // cold backup.
     if (!dsn::utils::filesystem::directory_exists(_dir) &&
         !dsn::utils::filesystem::create_directory(_dir)) {
         LOG_ERROR("cannot allocate new replica @ {}, because create dir failed", _dir);
@@ -76,61 +86,6 @@ error_code replica::initialize_on_new()
     return init_app_and_prepare_list(true);
 }
 
-/*static*/ replica *replica::newr(replica_stub *stub,
-                                  gpid gpid,
-                                  const app_info &app,
-                                  bool restore_if_necessary,
-                                  bool is_duplication_follower,
-                                  const std::string &parent_dir)
-{
-    std::string dir;
-    if (parent_dir.empty()) {
-        dir = stub->get_replica_dir(app.app_type.c_str(), gpid);
-    } else {
-        dir = stub->get_child_dir(app.app_type.c_str(), gpid, parent_dir);
-    }
-    replica *rep =
-        new replica(stub, gpid, app, dir.c_str(), restore_if_necessary, is_duplication_follower);
-    error_code err;
-    if (restore_if_necessary && (err = rep->restore_checkpoint()) != dsn::ERR_OK) {
-        LOG_ERROR("{}: try to restore replica failed, error({})", rep->name(), err.to_string());
-        return clear_on_failure(stub, rep, dir, gpid);
-    }
-
-    if (is_duplication_follower &&
-        (err = rep->get_replica_follower()->duplicate_checkpoint()) != dsn::ERR_OK) {
-        LOG_ERROR("{}: try to duplicate replica checkpoint failed, error({}) and please check "
-                  "previous detail error log",
-                  rep->name(),
-                  err.to_string());
-        return clear_on_failure(stub, rep, dir, gpid);
-    }
-
-    err = rep->initialize_on_new();
-    if (err == ERR_OK) {
-        LOG_DEBUG("{}: new replica succeed", rep->name());
-        return rep;
-    } else {
-        LOG_ERROR("{}: new replica failed, err = {}", rep->name(), err.to_string());
-        return clear_on_failure(stub, rep, dir, gpid);
-    }
-}
-
-/* static */ replica *replica::clear_on_failure(replica_stub *stub,
-                                                replica *rep,
-                                                const std::string &path,
-                                                const gpid &pid)
-{
-    rep->close();
-    delete rep;
-    rep = nullptr;
-
-    // clear work on failure
-    utils::filesystem::remove_path(path);
-    stub->_fs_manager.remove_replica(pid);
-    return nullptr;
-}
-
 error_code replica::initialize_on_load()
 {
     LOG_INFO_PREFIX("initialize replica on load, dir = {}", _dir);
@@ -141,83 +96,6 @@ error_code replica::initialize_on_load()
     }
 
     return init_app_and_prepare_list(false);
-}
-
-/*static*/ replica *replica::load(replica_stub *stub, const char *dir)
-{
-    FAIL_POINT_INJECT_F("mock_replica_load", [&](string_view) -> replica * { return nullptr; });
-
-    char splitters[] = {'\\', '/', 0};
-    std::string name = utils::get_last_component(std::string(dir), splitters);
-    if (name == "") {
-        LOG_ERROR("invalid replica dir {}", dir);
-        return nullptr;
-    }
-
-    char app_type[128];
-    int32_t app_id, pidx;
-    if (3 != sscanf(name.c_str(), "%d.%d.%s", &app_id, &pidx, app_type)) {
-        LOG_ERROR("invalid replica dir {}", dir);
-        return nullptr;
-    }
-
-    gpid pid(app_id, pidx);
-    if (!utils::filesystem::directory_exists(dir)) {
-        LOG_ERROR("replica dir {} not exist", dir);
-        return nullptr;
-    }
-
-    dsn::app_info info;
-    replica_app_info info2(&info);
-    std::string path = utils::filesystem::path_combine(dir, kAppInfo);
-    auto err = info2.load(path);
-    if (ERR_OK != err) {
-        LOG_ERROR("load app-info from {} failed, err = {}", path, err);
-        return nullptr;
-    }
-
-    if (info.app_type != app_type) {
-        LOG_ERROR("unmatched app type {} for {}", info.app_type, path);
-        return nullptr;
-    }
-
-    if (info.partition_count < pidx) {
-        LOG_ERROR("partition[{}], count={}, this replica may be partition split garbage partition, "
-                  "ignore it",
-                  pid,
-                  info.partition_count);
-        return nullptr;
-    }
-
-    replica *rep = new replica(stub, pid, info, dir, false);
-
-    err = rep->initialize_on_load();
-    if (err == ERR_OK) {
-        LOG_INFO("{}: load replica succeed", rep->name());
-        return rep;
-    } else {
-        LOG_ERROR("{}: load replica failed, err = {}", rep->name(), err);
-        rep->close();
-        delete rep;
-        rep = nullptr;
-
-        // clear work on failure
-        if (dsn::utils::filesystem::directory_exists(dir)) {
-            char rename_dir[1024];
-            sprintf(rename_dir, "%s.%" PRIu64 ".err", dir, dsn_now_us());
-            CHECK(dsn::utils::filesystem::rename_path(dir, rename_dir),
-                  "load_replica: failed to move directory '{}' to '{}'",
-                  dir,
-                  rename_dir);
-            LOG_WARNING("load_replica: replica_dir_op succeed to move directory '{}' to '{}'",
-                        dir,
-                        rename_dir);
-            stub->_counter_replicas_recent_replica_move_error_count->increment();
-            stub->_fs_manager.remove_replica(pid);
-        }
-
-        return nullptr;
-    }
 }
 
 decree replica::get_replay_start_decree()

@@ -17,11 +17,15 @@
 
 #pragma once
 
-#include <string>
+#include <cstddef>
 #include <cstdint>
+// IWYU pragma: no_include <experimental/string_view>
 #include <functional>
-#include "errors.h"
+#include <string>
+#include <string_view>
+
 #include "enum_helper.h"
+#include "errors.h"
 #include "utils.h"
 
 enum class flag_tag
@@ -47,7 +51,7 @@ struct hash<flag_tag>
 // Example:
 //    DSN_DEFINE_string(core, filename, "my_file.txt", "The file to read");
 //    DSN_DEFINE_validator(filename, [](const char *fname){ return is_file(fname); });
-//    auto fptr = file::open(FLAGS_filename, O_RDONLY | O_BINARY, 0);
+//    auto fptr = file::open(FLAGS_filename, file::FileOpenType::kReadOnly);
 
 #define DSN_DECLARE_VARIABLE(type, name) extern type FLAGS_##name
 

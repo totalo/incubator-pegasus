@@ -18,11 +18,17 @@
  */
 
 #include "utils/time_utils.h"
-#include <fmt/chrono.h>
+
+// TODO(yingchun): refactor this after libfmt upgraded
+#include <fmt/chrono.h> // IWYU pragma: keep
+// IWYU pragma: no_include <fmt/core.h>
+// IWYU pragma: no_include <fmt/format.h>
 #if FMT_VERSION < 60000
-#include <fmt/time.h> // time.h was removed from fmtlib >=6.x
+#include <fmt/time.h> // IWYU pragma: keep
 #endif
-#include <fmt/printf.h>
+#include <fmt/printf.h> // IWYU pragma: keep
+// IWYU pragma: no_include <algorithm>
+// IWYU pragma: no_include <iterator>
 
 namespace dsn {
 namespace utils {
@@ -31,6 +37,8 @@ namespace utils {
 {
     struct tm tmp;
     auto ret = get_localtime(ts_ms, &tmp);
+    // NOTE: format_to() does not append a terminating null character, so remember to initialize
+    // str's memory as zero before.
     fmt::format_to(str, "{:%Y-%m-%d %H:%M:%S}.{}", *ret, static_cast<uint32_t>(ts_ms % 1000));
 }
 

@@ -15,17 +15,43 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "utils/fmt_logging.h"
-#include "http/http_server.h"
-#include "utils/filesystem.h"
-#include "utils/output_utils.h"
-#include "utils/time_utils.h"
+#include <boost/cstdint.hpp>
+#include <boost/lexical_cast.hpp>
+#include <fmt/core.h>
+#include <algorithm>
+#include <iterator>
+#include <type_traits>
+#include <utility>
 
+#include "block_service/block_service.h"
 #include "block_service/block_service_manager.h"
 #include "common/backup_common.h"
+#include "common/replication.codes.h"
+#include "common/replication_enums.h"
+#include "dsn.layer2_types.h"
+#include "meta/backup_engine.h"
+#include "meta/meta_data.h"
+#include "meta/meta_rpc_types.h"
+#include "meta/meta_state_service.h"
 #include "meta_backup_service.h"
 #include "meta_service.h"
+#include "perf_counter/perf_counter.h"
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_holder.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/security/access_controller.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task_code.h"
 #include "server_state.h"
+#include "utils/autoref_ptr.h"
+#include "utils/blob.h"
+#include "utils/chrono_literals.h"
+#include "utils/defer.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/time_utils.h"
 
 namespace dsn {
 namespace replication {
@@ -1011,10 +1037,7 @@ void policy_context::sync_remove_backup_info(const backup_info &info, dsn::task_
                 0,
                 _backup_service->backup_option().meta_retry_delay_ms);
         } else {
-            CHECK(false,
-                  "{}: we can't handle this right now, error({})",
-                  _policy.policy_name,
-                  err.to_string());
+            CHECK(false, "{}: we can't handle this right now, error({})", _policy.policy_name, err);
         }
     };
 
@@ -1223,7 +1246,13 @@ void backup_service::add_backup_policy(dsn::message_ex *msg)
 {
     configuration_add_backup_policy_request request;
     configuration_add_backup_policy_response response;
+    auto log_on_failed = dsn::defer([&response]() {
+        if (!response.hint_message.empty()) {
+            LOG_WARNING(response.hint_message);
+        }
+    });
 
+    dsn::message_ex *copied_msg = message_ex::copy_message_no_reply(*msg);
     ::dsn::unmarshall(msg, request);
     std::set<int32_t> app_ids;
     std::map<int32_t, std::string> app_names;
@@ -1252,6 +1281,20 @@ void backup_service::add_backup_policy(dsn::message_ex *msg)
                           request.policy_name);
                 response.err = ERR_INVALID_PARAMETERS;
                 response.hint_message = "invalid app " + std::to_string(app_id);
+                _meta_svc->reply_data(msg, response);
+                msg->release_ref();
+                return;
+            }
+            // when the Ranger ACL is enabled, access control will be checked for each table.
+            auto access_controller = _meta_svc->get_access_controller();
+            // adding multiple judgments here is to adapt to the old ACL and avoid checking again.
+            if (access_controller->is_enable_ranger_acl() &&
+                !access_controller->allowed(copied_msg, app->app_name)) {
+                response.err = ERR_ACL_DENY;
+                response.hint_message =
+                    fmt::format("not authorized to add backup policy({}) for app id: {}",
+                                request.policy_name,
+                                app_id);
                 _meta_svc->reply_data(msg, response);
                 msg->release_ref();
                 return;
@@ -1333,9 +1376,7 @@ void backup_service::do_add_policy(dsn::message_ex *req,
                                  _opt.meta_retry_delay_ms);
                 return;
             } else {
-                CHECK(false,
-                      "we can't handle this when create backup policy, err({})",
-                      err.to_string());
+                CHECK(false, "we can't handle this when create backup policy, err({})", err);
             }
         },
         value);
@@ -1371,9 +1412,7 @@ void backup_service::do_update_policy_to_remote_storage(
                                  0,
                                  _opt.meta_retry_delay_ms);
             } else {
-                CHECK(false,
-                      "we can't handle this when create backup policy, err({})",
-                      err.to_string());
+                CHECK(false, "we can't handle this when create backup policy, err({})", err);
             }
         });
 }
@@ -1388,6 +1427,11 @@ void backup_service::query_backup_policy(query_backup_policy_rpc rpc)
 {
     const configuration_query_backup_policy_request &request = rpc.request();
     configuration_query_backup_policy_response &response = rpc.response();
+    auto log_on_failed = dsn::defer([&response]() {
+        if (!response.hint_msg.empty()) {
+            LOG_WARNING(response.hint_msg);
+        }
+    });
 
     response.err = ERR_OK;
 
@@ -1459,6 +1503,12 @@ void backup_service::modify_backup_policy(configuration_modify_backup_policy_rpc
     configuration_modify_backup_policy_response &response = rpc.response();
     response.err = ERR_OK;
 
+    auto log_on_failed = dsn::defer([&response]() {
+        if (!response.hint_message.empty()) {
+            LOG_WARNING(response.hint_message);
+        }
+    });
+
     std::shared_ptr<policy_context> context_ptr;
     {
         zauto_lock _(_lock);
@@ -1486,16 +1536,24 @@ void backup_service::modify_backup_policy(configuration_modify_backup_policy_rpc
 
         for (const auto &appid : request.add_appids) {
             const auto &app = _state->get_app(appid);
+            auto access_controller = _meta_svc->get_access_controller();
             // TODO: if app is dropped, how to process
             if (app == nullptr) {
                 LOG_WARNING("{}: add app to policy failed, because invalid app({}), ignore it",
                             cur_policy.policy_name,
                             appid);
-            } else {
-                valid_app_ids_to_add.emplace_back(appid);
-                id_to_app_names.insert(std::make_pair(appid, app->app_name));
-                have_modify_policy = true;
+                continue;
             }
+            if (access_controller->is_enable_ranger_acl() &&
+                !access_controller->allowed(rpc.dsn_request(), app->app_name)) {
+                LOG_WARNING("not authorized to modify backup policy({}) for app id: {}, skip it",
+                            cur_policy.policy_name,
+                            appid);
+                continue;
+            }
+            valid_app_ids_to_add.emplace_back(appid);
+            id_to_app_names.insert(std::make_pair(appid, app->app_name));
+            have_modify_policy = true;
         }
     }
 
@@ -1606,6 +1664,11 @@ void backup_service::start_backup_app(start_backup_app_rpc rpc)
 {
     const start_backup_app_request &request = rpc.request();
     start_backup_app_response &response = rpc.response();
+    auto log_on_failed = dsn::defer([&response]() {
+        if (!response.hint_message.empty()) {
+            LOG_WARNING(response.hint_message);
+        }
+    });
 
     int32_t app_id = request.app_id;
     std::shared_ptr<backup_engine> engine = std::make_shared<backup_engine>(this);
@@ -1671,6 +1734,11 @@ void backup_service::query_backup_status(query_backup_status_rpc rpc)
 {
     const query_backup_status_request &request = rpc.request();
     query_backup_status_response &response = rpc.response();
+    auto log_on_failed = dsn::defer([&response]() {
+        if (!response.hint_message.empty()) {
+            LOG_WARNING(response.hint_message);
+        }
+    });
 
     int32_t app_id = request.app_id;
     {

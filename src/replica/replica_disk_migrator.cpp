@@ -17,14 +17,25 @@
  * under the License.
  */
 
-#include "replica/replica_stub.h"
-#include "replica_disk_migrator.h"
-
 #include <boost/algorithm/string/replace.hpp>
+#include <fmt/core.h>
+
+#include "absl/strings/string_view.h"
+#include "common/fs_manager.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
+#include "common/replication_enums.h"
+#include "metadata_types.h"
+#include "replica/replica.h"
+#include "replica/replica_stub.h"
+#include "replica/replication_app_base.h"
+#include "replica_disk_migrator.h"
+#include "runtime/task/async_calls.h"
+#include "utils/error_code.h"
+#include "utils/fail_point.h"
 #include "utils/filesystem.h"
 #include "utils/fmt_logging.h"
-#include "replica/replication_app_base.h"
-#include "utils/fail_point.h"
+#include "utils/thread_access_checker.h"
 
 namespace dsn {
 namespace replication {
@@ -111,55 +122,12 @@ bool replica_disk_migrator::check_migration_args(replica_disk_migrate_rpc rpc)
         return false;
     }
 
-    bool valid_origin_disk = false;
-    bool valid_target_disk = false;
-    // _dir_nodes: std::vector<std::shared_ptr<dir_node>>
-    for (const auto &dir_node : _replica->get_replica_stub()->_fs_manager._dir_nodes) {
-        if (dir_node->tag == req.origin_disk) {
-            valid_origin_disk = true;
-            if (!dir_node->has(req.pid)) {
-                std::string err_msg =
-                    fmt::format("Invalid replica(replica({}) doesn't exist on origin disk({}))",
-                                req.pid,
-                                req.origin_disk);
-                LOG_ERROR_PREFIX(
-                    "received replica disk migrate request(origin={}, target={}), err = {}",
-                    req.origin_disk,
-                    req.target_disk,
-                    err_msg);
-                resp.err = ERR_OBJECT_NOT_FOUND;
-                resp.__set_hint(err_msg);
-                return false;
-            }
-        }
-
-        if (dir_node->tag == req.target_disk) {
-            valid_target_disk = true;
-            if (dir_node->has(get_gpid())) {
-                std::string err_msg =
-                    fmt::format("Invalid replica(replica({}) has existed on target disk({}))",
-                                req.pid,
-                                req.target_disk);
-                LOG_ERROR_PREFIX(
-                    "received replica disk migrate request(origin={}, target={}), err = {}",
-                    req.origin_disk,
-                    req.target_disk,
-                    err_msg);
-                resp.err = ERR_PATH_ALREADY_EXIST;
-                resp.__set_hint(err_msg);
-                return false;
-            }
-        }
-    }
-
-    if (!valid_origin_disk || !valid_target_disk) {
-        std::string invalid_disk_tag = !valid_origin_disk ? req.origin_disk : req.target_disk;
-        std::string err_msg = fmt::format("Invalid disk tag({} doesn't exist)", invalid_disk_tag);
-        LOG_ERROR_PREFIX("received replica disk migrate request(origin={}, target={}), err = {}",
-                         req.origin_disk,
-                         req.target_disk,
-                         err_msg);
-        resp.err = ERR_OBJECT_NOT_FOUND;
+    std::string err_msg;
+    auto ec = _replica->get_replica_stub()->_fs_manager.validate_migrate_op(
+        req.pid, req.origin_disk, req.target_disk, err_msg);
+    if (ec != ERR_OK) {
+        LOG_ERROR_PREFIX(err_msg);
+        resp.err = ec;
         resp.__set_hint(err_msg);
         return false;
     }
@@ -196,7 +164,7 @@ void replica_disk_migrator::migrate_replica(const replica_disk_migrate_request &
 // THREAD_POOL_REPLICATION_LONG
 bool replica_disk_migrator::init_target_dir(const replica_disk_migrate_request &req)
 {
-    FAIL_POINT_INJECT_F("init_target_dir", [this](string_view) -> bool {
+    FAIL_POINT_INJECT_F("init_target_dir", [this](absl::string_view) -> bool {
         reset_status();
         return false;
     });
@@ -242,7 +210,7 @@ bool replica_disk_migrator::init_target_dir(const replica_disk_migrate_request &
 // THREAD_POOL_REPLICATION_LONG
 bool replica_disk_migrator::migrate_replica_checkpoint(const replica_disk_migrate_request &req)
 {
-    FAIL_POINT_INJECT_F("migrate_replica_checkpoint", [this](string_view) -> bool {
+    FAIL_POINT_INJECT_F("migrate_replica_checkpoint", [this](absl::string_view) -> bool {
         reset_status();
         return false;
     });
@@ -278,7 +246,7 @@ bool replica_disk_migrator::migrate_replica_checkpoint(const replica_disk_migrat
 // THREAD_POOL_REPLICATION_LONG
 bool replica_disk_migrator::migrate_replica_app_info(const replica_disk_migrate_request &req)
 {
-    FAIL_POINT_INJECT_F("migrate_replica_app_info", [this](string_view) -> bool {
+    FAIL_POINT_INJECT_F("migrate_replica_app_info", [this](absl::string_view) -> bool {
         reset_status();
         return false;
     });

@@ -24,24 +24,17 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     context for replica with different roles
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
+#include <algorithm>
+#include <atomic>
+#include <vector>
 
-#include "utils/filesystem.h"
-#include "utils/utils.h"
-
-#include "replica_context.h"
-#include "replica.h"
-#include "replica_stub.h"
+#include "bulk_load_types.h"
+#include "common/replication_enums.h"
 #include "mutation.h"
-#include "mutation_log.h"
-#include "block_service/block_service_manager.h"
+#include "replica.h"
+#include "replica_context.h"
+#include "replica_stub.h"
+#include "utils/error_code.h"
 
 namespace dsn {
 namespace replication {
@@ -178,13 +171,14 @@ void primary_context::cleanup_split_states()
     split_stopped_secondary.clear();
 }
 
-bool primary_context::secondary_disk_space_insufficient() const
+bool primary_context::secondary_disk_abnormal() const
 {
     for (const auto &kv : secondary_disk_status) {
-        if (kv.second == disk_status::SPACE_INSUFFICIENT) {
-            LOG_INFO("partition[{}] secondary[{}] disk space is insufficient",
+        if (kv.second != disk_status::NORMAL) {
+            LOG_INFO("partition[{}] secondary[{}] disk space is {}",
                      membership.pid,
-                     kv.first.to_string());
+                     kv.first.to_string(),
+                     enum_to_string(kv.second));
             return true;
         }
     }

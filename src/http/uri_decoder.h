@@ -18,14 +18,16 @@
 #pragma once
 
 #include <string>
+
 #include "utils/errors.h"
+#include "absl/strings/string_view.h"
 
 namespace dsn {
 namespace uri {
 
 /// \brief Decodes a sequence according to the percent decoding rules.
 /// \returns the decoded uri path
-error_with<std::string> decode(const string_view &encoded_uri);
+error_with<std::string> decode(const absl::string_view &encoded_uri);
 
 } // namespace uri
 } // namespace dsn

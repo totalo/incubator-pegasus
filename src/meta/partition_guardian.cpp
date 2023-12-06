@@ -17,8 +17,23 @@
 
 #include "meta/partition_guardian.h"
 
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <algorithm>
+#include <ostream>
+#include <unordered_map>
+
+#include "common/replication_common.h"
+#include "common/replication_other_types.h"
+#include "meta/meta_data.h"
+#include "meta/meta_service.h"
 #include "meta/server_load_balancer.h"
+#include "perf_counter/perf_counter.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
 #include "utils/string_conv.h"
+#include "utils/strings.h"
 #include "utils/time_utils.h"
 
 namespace dsn {
@@ -87,9 +102,8 @@ void partition_guardian::reconfig(meta_view view, const configuration_update_req
     if (!cc->lb_actions.empty()) {
         const configuration_proposal_action *current = cc->lb_actions.front();
         CHECK(current != nullptr && current->type != config_type::CT_INVALID,
-              "invalid proposal for gpid({}.{})",
-              gpid.get_app_id(),
-              gpid.get_partition_index());
+              "invalid proposal for gpid({})",
+              gpid);
         // if the valid proposal is from cure
         if (!cc->lb_actions.is_from_balancer()) {
             finish_cure_proposal(view, gpid, *current);
@@ -117,7 +131,7 @@ void partition_guardian::reconfig(meta_view view, const configuration_update_req
 
                 CHECK(cc->record_drop_history(request.node),
                       "node({}) has been in the dropped",
-                      request.node.to_string());
+                      request.node);
             }
         });
     }
@@ -226,8 +240,7 @@ pc_status partition_guardian::on_missing_primary(meta_view &view, const dsn::gpi
 
         for (int i = 0; i < pc.secondaries.size(); ++i) {
             node_state *ns = get_node_state(*(view.nodes), pc.secondaries[i], false);
-            CHECK_NOTNULL(
-                ns, "invalid secondary address, address = {}", pc.secondaries[i].to_string());
+            CHECK_NOTNULL(ns, "invalid secondary address, address = {}", pc.secondaries[i]);
             if (!ns->alive())
                 continue;
 
@@ -295,7 +308,7 @@ pc_status partition_guardian::on_missing_primary(meta_view &view, const dsn::gpi
         action.node.set_invalid();
         for (int i = 0; i < cc.dropped.size(); ++i) {
             const dropped_replica &dr = cc.dropped[i];
-            char time_buf[30];
+            char time_buf[30] = {0};
             ::dsn::utils::time_ms_to_string(dr.time, time_buf);
             LOG_INFO("{}: config_context.dropped[{}]: "
                      "node({}), time({})[{}], ballot({}), "
@@ -495,7 +508,7 @@ pc_status partition_guardian::on_missing_secondary(meta_view &view, const dsn::g
     } else if (has_milliseconds_expired(cc.dropped.back().time +
                                         _replica_assign_delay_ms_for_dropouts)) {
         is_emergency = true;
-        char time_buf[30];
+        char time_buf[30] = {0};
         ::dsn::utils::time_ms_to_string(cc.dropped.back().time, time_buf);
         LOG_INFO("gpid({}): is emergency due to lose secondary for a long time, "
                  "last_dropped_node({}), drop_time({}), delay_ms({})",
@@ -592,9 +605,7 @@ pc_status partition_guardian::on_missing_secondary(meta_view &view, const dsn::g
         // if not emergency, only try to recover last dropped server
         const dropped_replica &server = cc.dropped.back();
         if (is_node_alive(*view.nodes, server.node)) {
-            CHECK(!server.node.is_invalid(),
-                  "invalid server address, address = {}",
-                  server.node.to_string());
+            CHECK(!server.node.is_invalid(), "invalid server address, address = {}", server.node);
             action.node = server.node;
         }
 

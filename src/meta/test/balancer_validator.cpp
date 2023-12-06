@@ -24,37 +24,31 @@
  * THE SOFTWARE.
  */
 
+#include <boost/cstdint.hpp>
+#include <boost/lexical_cast.hpp>
+#include <algorithm>
+#include <cstdint>
 #include <fstream>
+#include <map>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-#include <gtest/gtest.h>
-
-#include "common/gpid.h"
-#include "backup_types.h"
-#include "bulk_load_types.h"
+#include "common/replication_other_types.h"
 #include "common/serialization_helper/dsn.layer2_types.h"
-#include "consensus_types.h"
-#include "duplication_types.h"
-#include "meta_admin_types.h"
-#include "meta_service_test_app.h"
 #include "meta/greedy_load_balancer.h"
 #include "meta/meta_data.h"
+#include "meta/meta_service.h"
+#include "meta/partition_guardian.h"
 #include "meta/server_load_balancer.h"
 #include "meta/test/misc/misc.h"
-#include "partition_split_types.h"
-#include "replica_admin_types.h"
-#include "runtime/api_layer1.h"
-#include "runtime/api_task.h"
-#include "runtime/app_model.h"
-#include "runtime/rpc/rpc_stream.h"
-#include "runtime/rpc/serialization.h"
-#include "runtime/serverlet.h"
-#include "runtime/service_app.h"
-#include "runtime/task/task_code.h"
-#include "utils/api_utilities.h"
-#include "utils/error_code.h"
-#include "utils/fmt_logging.h"
+#include "meta_admin_types.h"
+#include "meta_service_test_app.h"
+#include "metadata_types.h"
 #include "runtime/rpc/rpc_address.h"
-#include "utils/threadpool_code.h"
+#include "utils/fmt_logging.h"
 
 namespace dsn {
 namespace replication {
@@ -118,106 +112,6 @@ static void check_cure(app_mapper &apps, node_mapper &nodes, ::dsn::partition_co
     CHECK_EQ(ns->served_as(pc.pid), partition_status::PS_SECONDARY);
     ns->put_partition(pc.pid, true);
 }
-
-// static void verbose_nodes(const node_mapper& nodes)
-//{
-//    std::cout << "------------" << std::endl;
-//    for (const auto& n: nodes)
-//    {
-//        const node_state& ns = n.second;
-//        printf("node: %s\ntotal_primaries: %d, total_secondaries: %d\n", n.first.to_string(),
-//        ns.primary_count(), ns.partition_count());
-//        for (int i=1; i<=2; ++i)
-//        {
-//            printf("app %d primaries: %d, app %d partitions: %d\n", i, ns.primary_count(i), i,
-//            ns.partition_count(i));
-//        }
-//    }
-//}
-//
-// static void verbose_app_node(const node_mapper& nodes)
-//{
-//    printf("Total_Pri: ");
-//    for (const auto& n: nodes)
-//    {
-//        const node_state& ns = n.second;
-//        printf("%*d", 3, ns.primary_count());
-//    }
-//    printf("\nTotal_Sec: ");
-//    for (const auto& n: nodes)
-//    {
-//        const node_state& ns = n.second;
-//        printf("%*d", 3, ns.secondary_count());
-//    }
-//    printf("\nApp01_Pri: ");
-//    for (const auto& n: nodes)
-//    {
-//        const node_state& ns = n.second;
-//        printf("%*d", 3, ns.primary_count(1));
-//    }
-//    printf("\nApp01_Sec: ");
-//    for (const auto& n: nodes)
-//    {
-//        const node_state& ns = n.second;
-//        printf("%*d", 3, ns.secondary_count(1));
-//    }
-//    printf("\nApp02_Pri: ");
-//    for (const auto& n: nodes)
-//    {
-//        const node_state& ns = n.second;
-//        printf("%*d", 3, ns.primary_count(2));
-//    }
-//    printf("\nApp02_Sec: ");
-//    for (const auto& n: nodes)
-//    {
-//        const node_state& ns = n.second;
-//        printf("%*d", 3, ns.secondary_count(2));
-//    }
-//    printf("\n");
-//}
-
-// static void verbose_app(const std::shared_ptr<app_state>& app)
-//{
-//    std::cout << app->app_name << " " << app->app_id << " " << app->partition_count << std::endl;
-//    for (int i=0; i<app->partition_count; ++i)
-//    {
-//        const partition_configuration& pc = app->partitions[i];
-//        std::cout << pc.primary.to_string();
-//        for (int j=0; j<pc.secondaries.size(); ++j)
-//        {
-//            std::cout << " " << pc.secondaries[j].to_string();
-//        }
-//        std::cout << std::endl;
-//    }
-//}
-// static void print_node_fs_manager(const app_mapper &apps,
-//                                  const node_mapper &nodes,
-//                                  const nodes_fs_manager &manager)
-//{
-//    int apps_count = apps.size();
-//    for (const auto &kv : nodes) {
-//        const node_state &ns = kv.second;
-//        printf("%s: %d primaries, %d partitions\n",
-//               ns.addr().to_string(),
-//               ns.primary_count(),
-//               ns.partition_count());
-//        printf("%8s", "tag");
-//        for (int i = 1; i <= apps_count; ++i) {
-//            std::string app = std::string("app") + std::to_string(i);
-//            printf("%8s", app.c_str());
-//        }
-//        printf("\n");
-//        const fs_manager &m = manager.find(ns.addr())->second;
-//        m.for_each_dir_node([apps_count](const dir_node &dn) {
-//            printf("%8s", dn.tag.c_str());
-//            for (int i = 1; i <= apps_count; ++i) {
-//                printf("%8u", dn.replicas_count(i));
-//            }
-//            printf("%8u\n", dn.replicas_count());
-//            return true;
-//        });
-//    }
-//}
 
 void meta_service_test_app::balancer_validator()
 {

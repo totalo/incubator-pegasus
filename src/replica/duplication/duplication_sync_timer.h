@@ -17,19 +17,22 @@
 
 #pragma once
 
-#include <atomic>
-
-#include "replica/replica_stub.h"
+#include <map>
+#include <vector>
 
 #include "common//duplication_common.h"
-#include "utils/chrono_literals.h"
+#include "common/gpid.h"
+#include "common/replication_other_types.h"
+#include "duplication_types.h"
+#include "replica/replica.h"
+#include "runtime/task/task.h"
+#include "utils/zlocks.h"
 
 namespace dsn {
+class error_code;
+
 namespace replication {
-
-using namespace literals::chrono_literals;
-
-constexpr int DUPLICATION_SYNC_PERIOD_SECOND = 10;
+class replica_stub;
 
 // Per-server(replica_stub)-instance.
 class duplication_sync_timer

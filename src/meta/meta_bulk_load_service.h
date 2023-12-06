@@ -17,12 +17,38 @@
 
 #pragma once
 
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <ostream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "bulk_load_types.h"
+#include "common/bulk_load_common.h"
+#include "common/gpid.h"
+#include "common/json_helper.h"
+#include "common/replication_other_types.h"
+#include "meta/meta_state_service_utils.h"
 #include "meta_bulk_load_ingestion_context.h"
-#include "meta_service.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/task/task_tracker.h"
 #include "server_state.h"
+#include "utils/error_code.h"
+#include "utils/flags.h"
+#include "utils/zlocks.h"
 
 namespace dsn {
+class partition_configuration;
+
 namespace replication {
+class app_state;
+class config_context;
+class meta_service;
 
 DSN_DECLARE_uint32(bulk_load_max_rollback_times);
 DSN_DECLARE_bool(enable_concurrent_bulk_load);
@@ -71,6 +97,10 @@ struct bulk_load_info
     int32_t app_id;
     std::string app_name;
     int32_t partition_count;
+    bulk_load_info(int32_t id = 0, const std::string &name = "", int32_t pcount = 0)
+        : app_id(id), app_name(name), partition_count(pcount)
+    {
+    }
     DEFINE_JSON_SERIALIZATION(app_id, app_name, partition_count)
 };
 

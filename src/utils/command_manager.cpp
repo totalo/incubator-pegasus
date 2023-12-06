@@ -26,14 +26,14 @@
 
 #include "utils/command_manager.h"
 
-#include <iostream>
-#include <sstream>
+#include <stdlib.h>
+#include <chrono>
+#include <limits>
+#include <sstream> // IWYU pragma: keep
 #include <thread>
+#include <utility>
 
 #include "utils/fmt_logging.h"
-#include "utils/logging_provider.h"
-#include "utils/smart_pointers.h"
-#include "utils/utils.h"
 
 namespace dsn {
 
@@ -65,7 +65,7 @@ command_manager::register_command(const std::vector<std::string> &commands,
         }
     }
 
-    return dsn::make_unique<command_deregister>(reinterpret_cast<uintptr_t>(c));
+    return std::make_unique<command_deregister>(reinterpret_cast<uintptr_t>(c));
 }
 
 void command_manager::deregister_command(uintptr_t handle)
@@ -179,7 +179,7 @@ command_manager::~command_manager()
 {
     _cmds.clear();
     CHECK(_handlers.empty(),
-          "All commands must be deregistered before command_manager is destroyed, however {} is "
+          "All commands must be deregistered before command_manager is destroyed, however '{}' is "
           "still registered",
           _handlers.begin()->first);
 }

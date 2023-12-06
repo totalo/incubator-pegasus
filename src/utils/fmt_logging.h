@@ -20,6 +20,9 @@
 #pragma once
 
 #include <fmt/ostream.h>
+#include <rocksdb/status.h>
+
+#include "utils/api_utilities.h"
 
 // The macros below no longer use the default snprintf method for log message formatting,
 // instead we use fmt::format.
@@ -38,17 +41,32 @@
 #define LOG_ERROR(...) dlog_f(LOG_LEVEL_ERROR, __VA_ARGS__)
 #define LOG_FATAL(...) dlog_f(LOG_LEVEL_FATAL, __VA_ARGS__)
 
+#define LOG_WARNING_IF(x, ...)                                                                     \
+    do {                                                                                           \
+        if (dsn_unlikely(x)) {                                                                     \
+            LOG_WARNING(__VA_ARGS__);                                                              \
+        }                                                                                          \
+    } while (false)
+
+#define LOG_ERROR_IF(x, ...)                                                                       \
+    do {                                                                                           \
+        if (dsn_unlikely(x)) {                                                                     \
+            LOG_ERROR(__VA_ARGS__);                                                                \
+        }                                                                                          \
+    } while (false)
+
 #define CHECK_EXPRESSION(expression, evaluation, ...)                                              \
     do {                                                                                           \
         if (dsn_unlikely(!(evaluation))) {                                                         \
-            dlog_f(LOG_LEVEL_FATAL, "assertion expression: " #expression);                         \
-            dlog_f(LOG_LEVEL_FATAL, __VA_ARGS__);                                                  \
-            dsn_coredump();                                                                        \
+            std::string assertion_info("assertion expression: [" #expression "] ");                \
+            assertion_info += fmt::format(__VA_ARGS__);                                            \
+            LOG_FATAL(assertion_info);                                                             \
         }                                                                                          \
     } while (false)
 
 #define CHECK(x, ...) CHECK_EXPRESSION(x, x, __VA_ARGS__)
-#define CHECK_NOTNULL(p, ...) CHECK(p != nullptr, __VA_ARGS__)
+#define CHECK_NOTNULL(p, ...) CHECK((p) != nullptr, __VA_ARGS__)
+#define CHECK_NULL(p, ...) CHECK((p) == nullptr, __VA_ARGS__)
 
 // Macros for writing log message prefixed by log_prefix().
 #define LOG_DEBUG_PREFIX(...) LOG_DEBUG("[{}] {}", log_prefix(), fmt::format(__VA_ARGS__))
@@ -238,21 +256,32 @@ inline const char *null_str_printer(const char *s) { return s == nullptr ? "(nul
 #define CHECK_LE_PREFIX(var1, var2) CHECK_LE_PREFIX_MSG(var1, var2, "")
 #define CHECK_GT_PREFIX(var1, var2) CHECK_GT_PREFIX_MSG(var1, var2, "")
 #define CHECK_LT_PREFIX(var1, var2) CHECK_LT_PREFIX_MSG(var1, var2, "")
+#define CHECK_OK_PREFIX(x) CHECK_EQ_PREFIX_MSG(x, ::dsn::ERR_OK, "")
 
 // Return the given status if condition is not true.
-#define ERR_LOG_AND_RETURN_NOT_TRUE(s, err, ...)                                                   \
+#define LOG_AND_RETURN_NOT_TRUE(level, s, err, ...)                                                \
     do {                                                                                           \
         if (dsn_unlikely(!(s))) {                                                                  \
-            LOG_ERROR("{}: {}", err, fmt::format(__VA_ARGS__));                                    \
+            LOG_##level("{}: {}", err, fmt::format(__VA_ARGS__));                                  \
             return err;                                                                            \
         }                                                                                          \
     } while (0)
 
 // Return the given status if it is not ERR_OK.
-#define ERR_LOG_AND_RETURN_NOT_OK(s, ...)                                                          \
+#define LOG_AND_RETURN_NOT_OK(level, s, ...)                                                       \
     do {                                                                                           \
-        error_code _err = (s);                                                                     \
-        ERR_LOG_AND_RETURN_NOT_TRUE(_err == ERR_OK, _err, __VA_ARGS__);                            \
+        ::dsn::error_code _err = (s);                                                              \
+        LOG_AND_RETURN_NOT_TRUE(level, _err == ::dsn::ERR_OK, _err, __VA_ARGS__);                  \
+    } while (0)
+
+// Return the given rocksdb::Status 's' if it is not OK.
+#define LOG_AND_RETURN_NOT_RDB_OK(level, s, ...)                                                   \
+    do {                                                                                           \
+        const auto &_s = (s);                                                                      \
+        if (dsn_unlikely(!_s.ok())) {                                                              \
+            LOG_##level("{}: {}", _s.ToString(), fmt::format(__VA_ARGS__));                        \
+            return _s;                                                                             \
+        }                                                                                          \
     } while (0)
 
 #ifndef NDEBUG

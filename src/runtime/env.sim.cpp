@@ -24,20 +24,17 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #include "env.sim.h"
-#include "scheduler.h"
 
-#include "utils/rand.h"
+#include <random>
+
+#include "runtime/task/task_worker.h"
 #include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/join_point.h"
+#include "utils/rand.h"
+#include "utils/threadpool_code.h"
+#include "utils/threadpool_spec.h"
 
 namespace dsn {
 namespace tools {

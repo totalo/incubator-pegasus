@@ -26,10 +26,11 @@
 
 #include "utils/output_utils.h"
 
-#include <gtest/gtest.h>
-
-#include <vector>
+// IWYU pragma: no_include <ext/alloc_traits.h>
 #include <string>
+#include <vector>
+
+#include "gtest/gtest.h"
 
 using std::vector;
 using std::string;

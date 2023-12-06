@@ -17,15 +17,31 @@
  * under the License.
  */
 
-#include "runtime/message_utils.h"
-#include "common//duplication_common.h"
-#include "utils/defer.h"
+#include <fmt/core.h>
+#include <rocksdb/status.h>
+#include <stdio.h>
+#include <thrift/transport/TTransportException.h>
+#include <algorithm>
+#include <utility>
 
 #include "base/pegasus_key_schema.h"
-#include "pegasus_server_write.h"
-#include "pegasus_server_impl.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
 #include "logging_utils.h"
-#include "pegasus_mutation_duplicator.h"
+#include "pegasus_rpc_types.h"
+#include "pegasus_server_impl.h"
+#include "pegasus_server_write.h"
+#include "pegasus_utils.h"
+#include "perf_counter/perf_counter.h"
+#include "rrdb/rrdb.code.definition.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_holder.h"
+#include "runtime/rpc/rpc_message.h"
+#include "server/pegasus_write_service.h"
+#include "utils/blob.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/ports.h"
 
 namespace pegasus {
 namespace server {
@@ -70,7 +86,7 @@ int pegasus_server_write::on_batched_write_requests(dsn::message_ex **requests,
         LOG_ERROR_PREFIX("pegasus not batch write handler failed, from = {}, exception = {}",
                          requests[0]->header->from_address.to_string(),
                          ex.what());
-        return 0;
+        return rocksdb::Status::kOk;
     }
 
     return on_batched_writes(requests, count);
@@ -80,7 +96,7 @@ void pegasus_server_write::set_default_ttl(uint32_t ttl) { _write_svc->set_defau
 
 int pegasus_server_write::on_batched_writes(dsn::message_ex **requests, int count)
 {
-    int err = 0;
+    int err = rocksdb::Status::kOk;
     {
         _write_svc->batch_prepare(_decree);
 
@@ -90,7 +106,7 @@ int pegasus_server_write::on_batched_writes(dsn::message_ex **requests, int coun
             // Make sure all writes are batched even if they are failed,
             // since we need to record the total qps and rpc latencies,
             // and respond for all RPCs regardless of their result.
-            int local_err = 0;
+            int local_err = rocksdb::Status::kOk;
             try {
                 dsn::task_code rpc_code(requests[i]->rpc_code());
                 if (rpc_code == dsn::apps::RPC_RRDB_RRDB_PUT) {
@@ -116,13 +132,14 @@ int pegasus_server_write::on_batched_writes(dsn::message_ex **requests, int coun
                                  ex.what());
             }
 
-            if (!err && local_err) {
+            if (err == rocksdb::Status::kOk && local_err != rocksdb::Status::kOk) {
                 err = local_err;
             }
         }
 
-        if (dsn_unlikely(err != 0 || _put_rpc_batch.size() + _remove_rpc_batch.size() == 0)) {
-            _write_svc->batch_abort(_decree, err == 0 ? -1 : err);
+        if (dsn_unlikely(err != rocksdb::Status::kOk ||
+                         (_put_rpc_batch.empty() && _remove_rpc_batch.empty()))) {
+            _write_svc->batch_abort(_decree, err == rocksdb::Status::kOk ? -1 : err);
         } else {
             err = _write_svc->batch_commit(_decree);
         }
@@ -155,8 +172,8 @@ void pegasus_server_write::request_key_check(int64_t decree,
                          "decree: {}, code: {}, hash_key: {}, sort_key: {}",
                          decree,
                          msg->local_rpc_code.to_string(),
-                         utils::c_escape_string(hash_key),
-                         utils::c_escape_string(sort_key));
+                         utils::c_escape_sensitive_string(hash_key),
+                         utils::c_escape_sensitive_string(sort_key));
     }
 }
 

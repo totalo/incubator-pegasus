@@ -30,9 +30,10 @@ set(MY_PROJ_LIBS dsn_meta_server
         zookeeper
         hashtable
         gtest
-)
+        test_utils
+        rocksdb)
 
-set(MY_BOOST_LIBS Boost::system Boost::filesystem Boost::regex)
+set(MY_BOOST_LIBS Boost::system Boost::filesystem)
 
 set(MY_BINPLACES
         config-test.ini

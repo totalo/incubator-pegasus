@@ -15,12 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "http/http_server.h"
+#include <functional>
+#include <string>
 
-#include "replica_stub.h"
+#include "http/http_server.h"
+#include "metadata_types.h"
+#include "utils/fmt_logging.h"
 
 namespace dsn {
 namespace replication {
+class replica_stub;
 
 class replica_http_service : public http_server_base
 {
@@ -44,7 +48,14 @@ public:
                                    this,
                                    std::placeholders::_1,
                                    std::placeholders::_2),
-                         "ip:port/replica/maual_compaction?app_id=<app_id>");
+                         "ip:port/replica/manual_compaction?app_id=<app_id>");
+    }
+
+    ~replica_http_service()
+    {
+        deregister_http_call("replica/duplication");
+        deregister_http_call("replica/data_version");
+        deregister_http_call("replica/manual_compaction");
     }
 
     std::string path() const override { return "replica"; }

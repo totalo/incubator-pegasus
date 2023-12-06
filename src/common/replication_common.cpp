@@ -26,13 +26,24 @@
 
 #include "common/replication_common.h"
 
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <algorithm>
 #include <fstream>
+#include <memory>
+#include <set>
 
+#include "common/gpid.h"
 #include "common/replica_envs.h"
+#include "common/replication_other_types.h"
+#include "dsn.layer2_types.h"
+#include "fmt/core.h"
+#include "runtime/service_app.h"
+#include "utils/config_api.h"
 #include "utils/filesystem.h"
 #include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/string_conv.h"
+#include "utils/strings.h"
 
 namespace dsn {
 namespace replication {
@@ -375,6 +386,8 @@ const std::string replica_envs::ROCKSDB_BLOCK_CACHE_ENABLED("replica.rocksdb_blo
 const std::string replica_envs::BUSINESS_INFO("business.info");
 const std::string replica_envs::REPLICA_ACCESS_CONTROLLER_ALLOWED_USERS(
     "replica_access_controller.allowed_users");
+const std::string replica_envs::REPLICA_ACCESS_CONTROLLER_RANGER_POLICIES(
+    "replica_access_controller.ranger_policies");
 const std::string replica_envs::READ_QPS_THROTTLING("replica.read_throttling");
 const std::string replica_envs::READ_SIZE_THROTTLING("replica.read_throttling_by_size");
 const std::string
@@ -383,6 +396,14 @@ const std::string replica_envs::USER_SPECIFIED_COMPACTION("user_specified_compac
 const std::string replica_envs::BACKUP_REQUEST_QPS_THROTTLING("replica.backup_request_throttling");
 const std::string replica_envs::ROCKSDB_ALLOW_INGEST_BEHIND("rocksdb.allow_ingest_behind");
 const std::string replica_envs::UPDATE_MAX_REPLICA_COUNT("max_replica_count.update");
+const std::string replica_envs::ROCKSDB_WRITE_BUFFER_SIZE("rocksdb.write_buffer_size");
+const std::string replica_envs::ROCKSDB_NUM_LEVELS("rocksdb.num_levels");
 
+const std::set<std::string> replica_envs::ROCKSDB_DYNAMIC_OPTIONS = {
+    replica_envs::ROCKSDB_WRITE_BUFFER_SIZE,
+};
+const std::set<std::string> replica_envs::ROCKSDB_STATIC_OPTIONS = {
+    replica_envs::ROCKSDB_NUM_LEVELS,
+};
 } // namespace replication
 } // namespace dsn

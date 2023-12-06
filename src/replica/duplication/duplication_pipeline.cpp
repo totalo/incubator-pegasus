@@ -17,13 +17,25 @@
 
 #include "duplication_pipeline.h"
 
-#include "replica/replication_app_base.h"
+#include <absl/strings/string_view.h>
+#include <stddef.h>
+#include <functional>
+#include <string>
+#include <utility>
+
+#include "dsn.layer2_types.h"
+#include "load_from_private_log.h"
+#include "perf_counter/perf_counter.h"
+#include "replica/duplication/replica_duplicator.h"
+#include "replica/mutation_log.h"
+#include "replica/replica.h"
+#include "runtime/rpc/rpc_holder.h"
+#include "utils/autoref_ptr.h"
+#include "utils/errors.h"
 #include "utils/fmt_logging.h"
 
-#include "replica/replica_stub.h"
-#include "load_from_private_log.h"
-
 namespace dsn {
+
 namespace replication {
 
 //                     //
@@ -31,7 +43,7 @@ namespace replication {
 //                     //
 
 /*static*/ std::function<std::unique_ptr<mutation_duplicator>(
-    replica_base *, string_view /*remote cluster*/, string_view /*app*/)>
+    replica_base *, absl::string_view /*remote cluster*/, absl::string_view /*app*/)>
     mutation_duplicator::creator;
 
 //               //

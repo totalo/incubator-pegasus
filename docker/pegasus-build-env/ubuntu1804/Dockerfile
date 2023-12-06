@@ -50,8 +50,11 @@ RUN apt-get update -y; \
                        libtool \
                        libssl-dev \
                        bison \
+                       libkrb5-dev \
+                       libsasl2-dev \
                        maven \
-                       flex; \
+                       flex \
+                       python3-setuptools; \
     rm -rf /var/lib/apt/lists/*
 
 RUN add-apt-repository ppa:git-core/ppa -y; \
@@ -60,7 +63,7 @@ RUN add-apt-repository ppa:git-core/ppa -y; \
     apt-get install pkg-config -y --no-install-recommends; \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir cmake
+RUN pip3 install --no-cache-dir --upgrade pip && pip3 install --no-cache-dir cmake
 
 RUN wget --progress=dot:giga https://github.com/apache/thrift/archive/refs/tags/0.11.0.tar.gz -P /opt/thrift && \
     cd /opt/thrift && tar xzf 0.11.0.tar.gz && cd thrift-0.11.0 && ./bootstrap.sh && \

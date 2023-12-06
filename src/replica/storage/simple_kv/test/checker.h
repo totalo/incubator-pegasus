@@ -24,28 +24,29 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     Replication testing framework.
- *
- * Revision history:
- *     Nov., 2015, @qinzuoyan (Zuoyan Qin), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
+#include <algorithm>
+#include <map>
+#include <string>
+#include <vector>
+
 #include "common.h"
-
-#include "utils/singleton.h"
+#include "meta/meta_data.h"
+#include "runtime/rpc/rpc_address.h"
 #include "runtime/simulator.h"
-#include "meta/meta_service_app.h"
-#include "replica/replication_service_app.h"
-
-#include "meta/server_state.h"
+#include "utils/singleton.h"
 
 namespace dsn {
+class service_app;
+namespace service {
+class meta_service_app;
+} // namespace service
+
 namespace replication {
+class replica_configuration;
+class replication_service_app;
+
 namespace test {
 
 using ::dsn::service::meta_service_app;

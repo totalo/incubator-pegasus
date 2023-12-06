@@ -26,7 +26,46 @@
 
 #include "asio_rpc_session.h"
 
+#include <boost/asio.hpp> // IWYU pragma: keep
+#include <boost/asio/basic_stream_socket.hpp>
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/error.hpp>
+#include <boost/asio/impl/io_context.hpp>
+#include <boost/asio/impl/system_executor.hpp>
+#include <boost/asio/impl/write.hpp>
+#include <boost/asio/ip/address.hpp>
+#include <boost/asio/ip/address_v4.hpp>
+#include <boost/asio/ip/impl/address.ipp>
+#include <boost/asio/ip/impl/address_v4.ipp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/socket_base.hpp>
+#include <boost/system/error_code.hpp>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <cstddef>
+#include <iterator>
+#include <new>
+#include <vector>
+
+// IWYU pragma: no_include "boost/asio/basic_stream_socket.hpp"
+// IWYU pragma: no_include "boost/asio/buffer.hpp"
+// IWYU pragma: no_include "boost/asio/error.hpp"
+// IWYU pragma: no_include "boost/asio/impl/io_context.hpp"
+// IWYU pragma: no_include "boost/asio/impl/system_executor.hpp"
+// IWYU pragma: no_include "boost/asio/impl/write.hpp"
+// IWYU pragma: no_include "boost/asio/ip/address.hpp"
+// IWYU pragma: no_include "boost/asio/ip/address_v4.hpp"
+// IWYU pragma: no_include "boost/asio/ip/impl/address.ipp"
+// IWYU pragma: no_include "boost/asio/ip/impl/address_v4.ipp"
+// IWYU pragma: no_include "boost/asio/socket_base.hpp"
+// IWYU pragma: no_include "boost/system/error_code.hpp"
+#include "runtime/rpc/asio_net_provider.h"
+#include "runtime/rpc/rpc_address.h"
+#include "utils/autoref_ptr.h"
+#include "utils/fmt_logging.h"
+
 namespace dsn {
+class message_ex;
+
 namespace tools {
 
 void asio_rpc_session::set_options()

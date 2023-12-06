@@ -28,14 +28,23 @@
 
 #include <chrono>
 #include <thread>
+#include <utility>
 
-#include "meta/meta_service.h"
+#include "fd_types.h"
 #include "meta/meta_options.h"
-#include "meta/server_state.h"
+#include "meta/meta_service.h"
+#include "runtime/app_model.h"
+#include "runtime/serverlet.h"
+#include "runtime/task/task_code.h"
+#include "utils/autoref_ptr.h"
+#include "utils/distributed_lock_service.h"
+#include "utils/error_code.h"
 #include "utils/factory_store.h"
 #include "utils/fail_point.h"
+#include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/string_conv.h"
+#include "absl/strings/string_view.h"
 
 DSN_DEFINE_int32(meta_server,
                  max_succssive_unstable_restart,
@@ -92,7 +101,7 @@ void meta_server_failure_detector::on_worker_connected(rpc_address node)
 
 bool meta_server_failure_detector::get_leader(rpc_address *leader)
 {
-    FAIL_POINT_INJECT_F("meta_server_failure_detector_get_leader", [leader](dsn::string_view str) {
+    FAIL_POINT_INJECT_F("meta_server_failure_detector_get_leader", [leader](absl::string_view str) {
         /// the format of str is : true#{ip}:{port} or false#{ip}:{port}
         auto pos = str.find("#");
         // get leader addr

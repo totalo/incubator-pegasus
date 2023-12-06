@@ -17,11 +17,25 @@
 
 #include "meta/load_balance_policy.h"
 
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <limits.h>
+#include <algorithm>
+#include <iterator>
+#include <limits>
+#include <mutex>
+#include <ostream>
+
+#include "dsn.layer2_types.h"
 #include "meta/greedy_load_balancer.h"
+#include "meta/meta_data.h"
+#include "meta_admin_types.h"
 #include "utils/command_manager.h"
 #include "utils/fail_point.h"
+#include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/string_conv.h"
+#include "absl/strings/string_view.h"
+#include "utils/strings.h"
 
 namespace dsn {
 namespace replication {
@@ -116,7 +130,8 @@ generate_balancer_request(const app_mapper &apps,
                           const rpc_address &from,
                           const rpc_address &to)
 {
-    FAIL_POINT_INJECT_F("generate_balancer_request", [](string_view name) { return nullptr; });
+    FAIL_POINT_INJECT_F("generate_balancer_request",
+                        [](absl::string_view name) { return nullptr; });
 
     configuration_balancer_request result;
     result.gpid = pc.pid;
@@ -224,7 +239,7 @@ bool load_balance_policy::copy_primary(const std::shared_ptr<app_state> &app,
     const app_mapper &apps = *_global_view->apps;
     int replicas_low = app->partition_count / _alive_nodes;
 
-    std::unique_ptr<copy_replica_operation> operation = dsn::make_unique<copy_primary_operation>(
+    std::unique_ptr<copy_replica_operation> operation = std::make_unique<copy_primary_operation>(
         app, apps, nodes, address_vec, address_id, still_have_less_than_average, replicas_low);
     return operation->start(_migration_result);
 }
@@ -499,7 +514,7 @@ std::unique_ptr<flow_path> ford_fulkerson::find_shortest_path()
     }
 
     if (visit.back() && flow.back() != 0) {
-        return dsn::make_unique<struct flow_path>(_app, std::move(flow), std::move(prev));
+        return std::make_unique<struct flow_path>(_app, std::move(flow), std::move(prev));
     } else {
         return nullptr;
     }

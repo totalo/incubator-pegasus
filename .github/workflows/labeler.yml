@@ -27,9 +27,9 @@ jobs:
     name: Module Labeler
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Assign GitHub labels
-        uses: actions/labeler@main
+        uses: actions/labeler@v4
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           configuration-path: .github/workflows/module_labeler_conf.yml

@@ -16,12 +16,21 @@
 // under the License.
 
 #include "runtime/task/task.h"
-#include "runtime/task/task_code.h"
 
-#include <gtest/gtest.h>
+#include <string>
+
+#include "aio/aio_task.h"
 #include "aio/file_io.h"
+#include "gtest/gtest.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_spec.h"
+#include "utils/flags.h"
+#include "utils/threadpool_code.h"
+
+DSN_DECLARE_bool(encrypt_data_at_rest);
 
 namespace dsn {
+class disk_file;
 
 DEFINE_TASK_CODE_AIO(LPC_TASK_TEST, TASK_PRIORITY_HIGH, THREAD_POOL_DEFAULT)
 
@@ -58,7 +67,10 @@ public:
 
     static void test_signal_finished_task()
     {
-        disk_file *fp = file::open("config-test.ini", O_RDONLY | O_BINARY, 0);
+        // config-test.ini is not encrypted, so set FLAGS_encrypt_data_at_rest = false on force.
+        FLAGS_encrypt_data_at_rest = false;
+
+        disk_file *fp = file::open("config-test.ini", file::FileOpenType::kReadOnly);
 
         // this aio task is enqueued into read-queue of disk_engine
         char buffer[128];
@@ -72,6 +84,7 @@ public:
         // signal a finished task won't cause failure
         t->signal_waiters(); // signal_waiters may return false
         t->signal_waiters();
+        ASSERT_EQ(ERR_OK, file::close(fp));
     }
 };
 

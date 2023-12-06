@@ -15,9 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
-#include "utils/fail_point.h"
+#include <stdint.h>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "common/gpid.h"
+#include "dsn.layer2_types.h"
+#include "gtest/gtest.h"
 #include "meta/app_balance_policy.h"
+#include "meta/load_balance_policy.h"
+#include "meta/meta_data.h"
+#include "runtime/rpc/rpc_address.h"
+#include "utils/fail_point.h"
 
 namespace dsn {
 namespace replication {

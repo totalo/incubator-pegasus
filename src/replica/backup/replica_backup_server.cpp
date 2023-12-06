@@ -16,11 +16,26 @@
 // under the License.
 
 #include "replica_backup_server.h"
-#include "replica_backup_manager.h"
+
+#include <string>
+
+#include "backup_types.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
 #include "replica/replica.h"
 #include "replica/replica_stub.h"
+#include "replica_backup_manager.h"
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/serialization.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/strings.h"
 
 namespace dsn {
+class message_ex;
+
 namespace replication {
 DSN_DECLARE_string(cold_backup_root);
 
@@ -34,6 +49,12 @@ replica_backup_server::replica_backup_server(const replica_stub *rs) : _stub(rs)
         unmarshall(msg, clear_req);
         on_clear_cold_backup(clear_req);
     });
+}
+
+replica_backup_server::~replica_backup_server()
+{
+    dsn_rpc_unregiser_handler(RPC_COLD_BACKUP);
+    dsn_rpc_unregiser_handler(RPC_CLEAR_COLD_BACKUP);
 }
 
 void replica_backup_server::on_cold_backup(backup_rpc rpc)

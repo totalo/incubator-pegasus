@@ -17,22 +17,38 @@
  * under the License.
  */
 
-#include <cctype>
+#include <fmt/core.h>
+#include <pegasus/error.h>
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <string>
-#include <stdint.h>
+#include <type_traits>
+#include <utility>
 
-#include "utils/error_code.h"
-#include "utils/threadpool_code.h"
-#include "runtime/task/task_code.h"
-#include "common/gpid.h"
-#include "runtime/rpc/group_address.h"
+#include "base/pegasus_const.h"
 #include "common/replication_other_types.h"
 #include "common/serialization_helper/dsn.layer2_types.h"
-#include <rrdb/rrdb.code.definition.h>
-#include <pegasus/error.h>
+#include "pegasus/client.h"
 #include "pegasus_client_impl.h"
-#include "base/pegasus_const.h"
+#include "pegasus_key_schema.h"
+#include "pegasus_utils.h"
+#include "rrdb/rrdb.client.h"
+#include "runtime/rpc/group_address.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task_code.h"
+#include "utils/error_code.h"
+#include "utils/fmt_logging.h"
+#include "absl/strings/string_view.h"
+#include "utils/synchronize.h"
+#include "utils/threadpool_code.h"
+#include "utils/utils.h"
+
+namespace dsn {
+class message_ex;
+class task_tracker;
+} // namespace dsn
 
 using namespace ::dsn;
 
@@ -1165,12 +1181,12 @@ int pegasus_client_impl::get_scanner(const std::string &hash_key,
         pegasus_generate_key(prefix_start, hash_key, o.sort_key_filter_pattern);
         pegasus_generate_next_blob(prefix_stop, hash_key, o.sort_key_filter_pattern);
 
-        if (::dsn::string_view(prefix_start).compare(start) > 0) {
+        if (prefix_start.to_string_view() > start.to_string_view()) {
             start = std::move(prefix_start);
             o.start_inclusive = true;
         }
 
-        if (::dsn::string_view(prefix_stop).compare(stop) <= 0) {
+        if (prefix_stop.to_string_view() <= stop.to_string_view()) {
             stop = std::move(prefix_stop);
             o.stop_inclusive = false;
         }
@@ -1178,7 +1194,7 @@ int pegasus_client_impl::get_scanner(const std::string &hash_key,
 
     // check if range is empty
     std::vector<uint64_t> v;
-    int c = ::dsn::string_view(start).compare(stop);
+    int c = start.to_string_view().compare(stop.to_string_view());
     if (c < 0 || (c == 0 && o.start_inclusive && o.stop_inclusive)) {
         v.push_back(pegasus_key_hash(start));
     }
@@ -1283,6 +1299,7 @@ const char *pegasus_client_impl::get_error_string(int error_code) const
     _client_error_to_string.clear();
 #define PEGASUS_ERR_CODE(x, y, z) _client_error_to_string[y] = z
 #include <pegasus/error_def.h>
+
 #undef PEGASUS_ERR_CODE
 
     _server_error_to_client.clear();

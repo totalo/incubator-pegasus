@@ -17,7 +17,13 @@
  * under the License.
  */
 
+#include <stdio.h>
+#include <string>
+
+#include "shell/command_executor.h"
 #include "shell/commands.h"
+#include "shell/sds/sds.h"
+#include "utils/string_conv.h"
 #include "utils/strings.h"
 
 bool use_app_as_current(command_executor *e, shell_context *sc, arguments args)

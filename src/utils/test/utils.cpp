@@ -24,20 +24,18 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
+#include <stddef.h>
+#include <list>
+#include <map>
+#include <set>
+#include <string>
 #include <tuple>
+#include <type_traits>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
-#include <gtest/gtest.h>
-
-#include "runtime/api_layer1.h"
+#include "gtest/gtest.h"
 #include "utils/autoref_ptr.h"
 #include "utils/binary_reader.h"
 #include "utils/binary_writer.h"

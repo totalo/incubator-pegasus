@@ -24,22 +24,29 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     a simple version of distributed lock service for development
- *
- * Revision history:
- *     2015-11-04, @imzhenyu (Zhenyu.Guo@microsoft.com), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
-#include "utils/zlocks.h"
+#include <stdint.h>
+#include <list>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "runtime/task/future_types.h"
+#include "runtime/task/task.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_tracker.h"
+#include "utils/autoref_ptr.h"
 #include "utils/distributed_lock_service.h"
+#include "utils/error_code.h"
+#include "utils/zlocks.h"
 
 namespace dsn {
 namespace dist {
+
+// A simple version of distributed lock service.
+// NOTE: Only for test purpose.
 class distributed_lock_service_simple : public distributed_lock_service
 {
 public:

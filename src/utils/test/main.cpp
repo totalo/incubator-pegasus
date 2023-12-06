@@ -16,8 +16,8 @@
 // under the License.
 
 #include <gtest/gtest.h>
+#include <memory>
 
-#include "utils/api_utilities.h"
 #include "utils/flags.h"
 #include "utils/logging_provider.h"
 

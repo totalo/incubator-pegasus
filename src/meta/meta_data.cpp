@@ -24,33 +24,17 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     the meta server's date structure, impl file
- *
- * Revision history:
- *     2016-04-25, Weijie Sun(sunweijie at xiaomi.com), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
 #include <boost/lexical_cast.hpp>
+#include <cstdint>
 
-#include "utils/fmt_logging.h"
-#include "runtime/api_task.h"
-#include "runtime/api_layer1.h"
-#include "runtime/app_model.h"
-#include "utils/api_utilities.h"
-#include "utils/error_code.h"
-#include "utils/threadpool_code.h"
-#include "runtime/task/task_code.h"
 #include "common/gpid.h"
-#include "runtime/rpc/serialization.h"
-#include "runtime/rpc/rpc_stream.h"
-#include "runtime/serverlet.h"
-#include "runtime/service_app.h"
-#include "runtime/rpc/rpc_address.h"
-#include "utils/flags.h"
-
+#include "common/replication_enums.h"
 #include "meta_data.h"
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_message.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
 
 namespace dsn {
 namespace replication {
@@ -167,10 +151,7 @@ bool construct_replica(meta_view view, const gpid &pid, int max_replica_count)
     // we put max_replica_count-1 recent replicas to last_drops, in case of the DDD-state when the
     // only primary dead
     // when add node to pc.last_drops, we don't remove it from our cc.drop_list
-    CHECK(pc.last_drops.empty(),
-          "last_drops of partition({}.{}) must be empty",
-          pid.get_app_id(),
-          pid.get_partition_index());
+    CHECK(pc.last_drops.empty(), "last_drops of partition({}) must be empty", pid);
     for (auto iter = drop_list.rbegin(); iter != drop_list.rend(); ++iter) {
         if (pc.last_drops.size() + 1 >= max_replica_count)
             break;
@@ -410,10 +391,9 @@ int config_context::collect_drop_replica(const rpc_address &node, const replica_
     iter = find_from_dropped(node);
     if (iter == dropped.end()) {
         CHECK(!in_dropped,
-              "adjust position of existing node({}) failed, this is a bug, partition({}.{})",
-              node.to_string(),
-              config_owner->pid.get_app_id(),
-              config_owner->pid.get_partition_index());
+              "adjust position of existing node({}) failed, this is a bug, partition({})",
+              node,
+              config_owner->pid);
         return -1;
     }
     return in_dropped ? 1 : 0;

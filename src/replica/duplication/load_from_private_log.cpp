@@ -15,14 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "utils/fmt_logging.h"
+#include <iterator>
+#include <map>
+#include <string>
+#include <utility>
 
-#include "replica/replica_stub.h"
-#include "replica/replica.h"
-#include "replica/mutation_log_utils.h"
+#include "absl/strings/string_view.h"
+#include "common/duplication_common.h"
+#include "duplication_types.h"
 #include "load_from_private_log.h"
+#include "perf_counter/perf_counter.h"
+#include "replica/duplication/mutation_batch.h"
+#include "replica/mutation.h"
+#include "replica/mutation_log_utils.h"
+#include "replica/replica.h"
 #include "replica_duplicator.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/errors.h"
 #include "utils/fail_point.h"
+#include "utils/fmt_logging.h"
+#include "utils/ports.h"
 
 namespace dsn {
 namespace replication {
@@ -46,11 +59,11 @@ bool load_from_private_log::will_fail_fast() const
 // we try to list all files and select a new one to start (find_log_file_to_start).
 bool load_from_private_log::switch_to_next_log_file()
 {
-    auto file_map = _private_log->get_log_file_map();
-    auto next_file_it = file_map.find(_current->index() + 1);
+    const auto &file_map = _private_log->get_log_file_map();
+    const auto &next_file_it = file_map.find(_current->index() + 1);
     if (next_file_it != file_map.end()) {
         log_file_ptr file;
-        error_s es = log_utils::open_read(next_file_it->second->path(), file);
+        const auto &es = log_utils::open_read(next_file_it->second->path(), file);
         if (!es.is_ok()) {
             LOG_ERROR_PREFIX("{}", es);
             _current = nullptr;
@@ -84,13 +97,15 @@ void load_from_private_log::run()
                 _duplicator->progress().confirmed_decree);
             repeat(1_s);
 
-            FAIL_POINT_INJECT_NOT_RETURN_F("duplication_sync_complete", [&](string_view s) -> void {
-                if (_duplicator->progress().confirmed_decree == invalid_decree) {
-                    // set_confirmed_decree(9), the value must be equal (decree_start of
-                    // `test_start_duplication` in `load_from_private_log_test.cpp`) -1
-                    _duplicator->update_progress(_duplicator->progress().set_confirmed_decree(9));
-                }
-            });
+            FAIL_POINT_INJECT_NOT_RETURN_F(
+                "duplication_sync_complete", [&](absl::string_view s) -> void {
+                    if (_duplicator->progress().confirmed_decree == invalid_decree) {
+                        // set_confirmed_decree(9), the value must be equal (decree_start of
+                        // `test_start_duplication` in `load_from_private_log_test.cpp`) -1
+                        _duplicator->update_progress(
+                            _duplicator->progress().set_confirmed_decree(9));
+                    }
+                });
             return;
         } else {
             _mutation_batch.reset_mutation_buffer(_duplicator->progress().confirmed_decree);
@@ -112,11 +127,11 @@ void load_from_private_log::run()
 void load_from_private_log::find_log_file_to_start()
 {
     // `file_map` has already excluded the useless log files during replica init.
-    auto file_map = _private_log->get_log_file_map();
+    const auto &file_map = _private_log->get_log_file_map();
 
     // Reopen the files. Because the internal file handle of `file_map`
     // is cleared once WAL replay finished. They are unable to read.
-    std::map<int, log_file_ptr> new_file_map;
+    mutation_log::log_file_map_by_index new_file_map;
     for (const auto &pr : file_map) {
         log_file_ptr file;
         error_s es = log_utils::open_read(pr.second->path(), file);
@@ -130,7 +145,8 @@ void load_from_private_log::find_log_file_to_start()
     find_log_file_to_start(std::move(new_file_map));
 }
 
-void load_from_private_log::find_log_file_to_start(std::map<int, log_file_ptr> log_file_map)
+void load_from_private_log::find_log_file_to_start(
+    const mutation_log::log_file_map_by_index &log_file_map)
 {
     _current = nullptr;
     if (dsn_unlikely(log_file_map.empty())) {

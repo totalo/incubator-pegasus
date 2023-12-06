@@ -18,14 +18,30 @@
 */
 
 #include "replica_follower.h"
-#include "replica/replica_stub.h"
-#include "utils/filesystem.h"
-#include "common/duplication_common.h"
 
-#include <boost/algorithm/string.hpp>
-#include "runtime/rpc/group_address.h"
+#include <stddef.h>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <utility>
+
+#include "common/duplication_common.h"
+#include "common/fs_manager.h"
+#include "common/replication.codes.h"
+#include "consensus_types.h"
 #include "nfs/nfs_node.h"
+#include "replica/replica.h"
+#include "replica/replica_stub.h"
+#include "runtime/rpc/group_address.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/task/async_calls.h"
 #include "utils/fail_point.h"
+#include "utils/filesystem.h"
+#include "utils/fmt_logging.h"
+#include "utils/ports.h"
+#include "absl/strings/string_view.h"
+#include "utils/strings.h"
 
 namespace dsn {
 namespace replication {
@@ -54,7 +70,7 @@ void replica_follower::init_master_info()
 
     const auto &meta_list_str = envs.at(duplication_constants::kDuplicationEnvMasterMetasKey);
     std::vector<std::string> metas;
-    boost::split(metas, meta_list_str, boost::is_any_of(","));
+    dsn::utils::split_args(meta_list_str.c_str(), metas, ',');
     CHECK(!metas.empty(), "master cluster meta list is invalid!");
     for (const auto &meta : metas) {
         dsn::rpc_address node;
@@ -103,12 +119,13 @@ void replica_follower::async_duplicate_checkpoint_from_master_replica()
         RPC_CM_QUERY_PARTITION_CONFIG_BY_INDEX, 0, get_gpid().thread_hash());
     dsn::marshall(msg, meta_config_request);
     rpc::call(meta_servers, msg, &_tracker, [&](error_code err, query_cfg_response &&resp) mutable {
-        FAIL_POINT_INJECT_F("duplicate_checkpoint_ok", [&](string_view s) -> void {
+        FAIL_POINT_INJECT_F("duplicate_checkpoint_ok", [&](absl::string_view s) -> void {
             _tracker.set_tasks_success();
             return;
         });
 
-        FAIL_POINT_INJECT_F("duplicate_checkpoint_failed", [&](string_view s) -> void { return; });
+        FAIL_POINT_INJECT_F("duplicate_checkpoint_failed",
+                            [&](absl::string_view s) -> void { return; });
         if (update_master_replica_config(err, std::move(resp)) == ERR_OK) {
             copy_master_replica_checkpoint();
         }
@@ -220,7 +237,7 @@ void replica_follower::nfs_copy_remote_files(const rpc_address &remote_node,
     request->source_disk_tag = remote_disk;
     request->source_dir = remote_dir;
     request->files = file_list;
-    request->dest_disk_tag = _replica->get_replica_disk_tag();
+    request->dest_disk_tag = _replica->get_dir_node()->tag;
     request->dest_dir = dest_dir;
     request->overwrite = true;
     request->high_priority = false;
@@ -231,7 +248,7 @@ void replica_follower::nfs_copy_remote_files(const rpc_address &remote_node,
         &_tracker,
         [&, remote_dir](error_code err, size_t size) mutable {
             FAIL_POINT_INJECT_NOT_RETURN_F("nfs_copy_ok",
-                                           [&](string_view s) -> void { err = ERR_OK; });
+                                           [&](absl::string_view s) -> void { err = ERR_OK; });
 
             if (dsn_unlikely(err != ERR_OK)) {
                 LOG_ERROR_PREFIX("nfs copy master[{}] checkpoint failed: checkpoint = {}, err = {}",

@@ -24,21 +24,17 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     a C++ wrapper of zookeeper c async api, implementation
- *
- * Revision history:
- *     2015-12-04, @shengofsun (sunweijie@xiaomi.com)
- */
-
+#include <stdlib.h>
 #include <zookeeper/zookeeper.h>
-#include <sasl/sasl.h>
+#include <algorithm>
+#include <utility>
 
-#include "zookeeper_session.h"
-#include "zookeeper_session_mgr.h"
-
+#include "runtime/app_model.h"
 #include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "zookeeper/proto.h"
+#include "zookeeper/zookeeper.jute.h"
+#include "zookeeper_session.h"
 
 namespace dsn {
 namespace security {

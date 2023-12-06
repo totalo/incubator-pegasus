@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <string>
+#include <set>
 
 namespace dsn {
 namespace replication {
@@ -56,6 +57,7 @@ public:
     static const std::string MANUAL_COMPACT_PERIODIC_BOTTOMMOST_LEVEL_COMPACTION;
     static const std::string BUSINESS_INFO;
     static const std::string REPLICA_ACCESS_CONTROLLER_ALLOWED_USERS;
+    static const std::string REPLICA_ACCESS_CONTROLLER_RANGER_POLICIES;
     static const std::string READ_QPS_THROTTLING;
     static const std::string READ_SIZE_THROTTLING;
     static const std::string BACKUP_REQUEST_QPS_THROTTLING;
@@ -63,6 +65,11 @@ public:
     static const std::string USER_SPECIFIED_COMPACTION;
     static const std::string ROCKSDB_ALLOW_INGEST_BEHIND;
     static const std::string UPDATE_MAX_REPLICA_COUNT;
+    static const std::string ROCKSDB_WRITE_BUFFER_SIZE;
+    static const std::string ROCKSDB_NUM_LEVELS;
+
+    static const std::set<std::string> ROCKSDB_DYNAMIC_OPTIONS;
+    static const std::set<std::string> ROCKSDB_STATIC_OPTIONS;
 };
 
 } // namespace replication

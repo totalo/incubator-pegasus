@@ -25,28 +25,42 @@
  */
 
 #include "replica.h"
-#include "mutation.h"
-#include "mutation_log.h"
-#include "replica_stub.h"
+
+#include <fmt/core.h>
+#include <rocksdb/status.h>
+#include <functional>
+#include <set>
+
+#include "backup/replica_backup_manager.h"
+#include "bulk_load/replica_bulk_loader.h"
+#include "common/backup_common.h"
+#include "common/fs_manager.h"
+#include "common/gpid.h"
+#include "common/replica_envs.h"
+#include "common/replication_enums.h"
+#include "consensus_types.h"
 #include "duplication/replica_duplicator_manager.h"
 #include "duplication/replica_follower.h"
-#include "backup/replica_backup_manager.h"
-#include "backup/cold_backup_context.h"
-#include "bulk_load/replica_bulk_loader.h"
-#include "split/replica_split_manager.h"
-#include "replica_disk_migrator.h"
-#include "runtime/security/access_controller.h"
-
-#include "utils/latency_tracer.h"
-#include "common/json_helper.h"
+#include "mutation.h"
+#include "mutation_log.h"
+#include "perf_counter/perf_counter.h"
+#include "perf_counter/perf_counters.h"
+#include "replica/prepare_list.h"
+#include "replica/replica_context.h"
 #include "replica/replication_app_base.h"
-#include "common/replica_envs.h"
-#include "utils/fmt_logging.h"
-#include "utils/filesystem.h"
-#include "utils/rand.h"
-#include "utils/string_conv.h"
-#include "utils/strings.h"
+#include "replica_admin_types.h"
+#include "replica_disk_migrator.h"
+#include "replica_stub.h"
 #include "runtime/rpc/rpc_message.h"
+#include "runtime/security/access_controller.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_spec.h"
+#include "split/replica_split_manager.h"
+#include "utils/filesystem.h"
+#include "utils/fmt_logging.h"
+#include "utils/latency_tracer.h"
+#include "utils/ports.h"
+#include "utils/rand.h"
 
 namespace dsn {
 namespace replication {
@@ -81,7 +95,7 @@ const std::string replica::kAppInfo = ".app-info";
 replica::replica(replica_stub *stub,
                  gpid gpid,
                  const app_info &app,
-                 const char *dir,
+                 dir_node *dn,
                  bool need_restore,
                  bool is_duplication_follower)
     : serverlet<replica>("replica"),
@@ -105,14 +119,16 @@ replica::replica(replica_stub *stub,
     CHECK(!_app_info.app_type.empty(), "");
     CHECK_NOTNULL(stub, "");
     _stub = stub;
-    _dir = dir;
+    CHECK_NOTNULL(dn, "");
+    _dir_node = dn;
+    _dir = dn->replica_dir(_app_info.app_type, gpid);
     _options = &stub->options();
     init_state();
     _config.pid = gpid;
-    _bulk_loader = make_unique<replica_bulk_loader>(this);
-    _split_mgr = make_unique<replica_split_manager>(this);
-    _disk_migrator = make_unique<replica_disk_migrator>(this);
-    _replica_follower = make_unique<replica_follower>(this);
+    _bulk_loader = std::make_unique<replica_bulk_loader>(this);
+    _split_mgr = std::make_unique<replica_split_manager>(this);
+    _disk_migrator = std::make_unique<replica_disk_migrator>(this);
+    _replica_follower = std::make_unique<replica_follower>(this);
 
     std::string counter_str = fmt::format("private.log.size(MB)@{}", gpid);
     _counter_private_log_size.init_app_counter(
@@ -198,7 +214,7 @@ void replica::init_state()
 {
     _inactive_is_transient = false;
     _is_initializing = false;
-    _prepare_list = dsn::make_unique<prepare_list>(
+    _prepare_list = std::make_unique<prepare_list>(
         this,
         0,
         FLAGS_max_mutation_count_in_prepare_list,
@@ -213,7 +229,6 @@ void replica::init_state()
     _last_config_change_time_ms = _create_time_ms;
     update_last_checkpoint_generate_time();
     _private_log = nullptr;
-    init_disk_tag();
     get_bool_envs(_app_info.envs, replica_envs::ROCKSDB_ALLOW_INGEST_BEHIND, _allow_ingest_behind);
 }
 
@@ -226,7 +241,7 @@ replica::~replica(void)
 
 void replica::on_client_read(dsn::message_ex *request, bool ignore_throttling)
 {
-    if (!_access_controller->allowed(request)) {
+    if (!_access_controller->allowed(request, ranger::access_type::kRead)) {
         response_client_read(request, ERR_ACL_DENY);
         return;
     }
@@ -265,8 +280,7 @@ void replica::on_client_read(dsn::message_ex *request, bool ignore_throttling)
 
         // a small window where the state is not the latest yet
         if (last_committed_decree() < _primary_states.last_prepare_decree_on_new_primary) {
-            LOG_ERROR_PREFIX("last_committed_decree(%" PRId64
-                             ") < last_prepare_decree_on_new_primary(%" PRId64 ")",
+            LOG_ERROR_PREFIX("last_committed_decree({}) < last_prepare_decree_on_new_primary({})",
                              last_committed_decree(),
                              _primary_states.last_prepare_decree_on_new_primary);
             response_client_read(request, ERR_INVALID_STATE);
@@ -281,7 +295,22 @@ void replica::on_client_read(dsn::message_ex *request, bool ignore_throttling)
 
     uint64_t start_time_ns = dsn_now_ns();
     CHECK(_app, "");
-    _app->on_request(request);
+    auto storage_error = _app->on_request(request);
+    if (dsn_unlikely(storage_error != ERR_OK)) {
+        switch (storage_error) {
+        // TODO(yingchun): Now only kCorruption and kIOError are dealt, consider to deal with
+        //  more storage engine errors.
+        case rocksdb::Status::kCorruption:
+            handle_local_failure(ERR_RDB_CORRUPTION);
+            break;
+        case rocksdb::Status::kIOError:
+            handle_local_failure(ERR_DISK_IO_ERROR);
+            break;
+        default:
+            LOG_ERROR_PREFIX("client read encountered an unhandled error: {}", storage_error);
+        }
+        return;
+    }
 
     // If the corresponding perf counter exist, count the duration of this operation.
     // rpc code of request is already checked in message_ex::rpc_code, so it will always be legal
@@ -419,8 +448,6 @@ mutation_ptr replica::new_mutation(decree decree)
 }
 
 decree replica::last_durable_decree() const { return _app->last_durable_decree(); }
-
-decree replica::last_flushed_decree() const { return _app->last_flushed_decree(); }
 
 decree replica::last_prepared_decree() const
 {
@@ -561,14 +588,6 @@ uint32_t replica::query_data_version() const
     return _app->query_data_version();
 }
 
-void replica::init_disk_tag()
-{
-    dsn::error_code err = _stub->_fs_manager.get_disk_tag(dir(), _disk_tag);
-    if (dsn::ERR_OK != err) {
-        LOG_ERROR_PREFIX("get disk tag of {} failed: {}, init it to empty ", dir(), err);
-    }
-}
-
 error_code replica::store_app_info(app_info &info, const std::string &path)
 {
     replica_app_info new_info((app_info *)&info);
@@ -578,6 +597,11 @@ error_code replica::store_app_info(app_info &info, const std::string &path)
         LOG_ERROR_PREFIX("failed to save app_info to {}, error = {}", info_path, err);
     }
     return err;
+}
+
+bool replica::access_controller_allowed(message_ex *msg, const ranger::access_type &ac_type) const
+{
+    return !_access_controller->is_enable_ranger_acl() || _access_controller->allowed(msg, ac_type);
 }
 
 } // namespace replication

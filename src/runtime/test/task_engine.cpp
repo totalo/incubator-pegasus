@@ -24,20 +24,21 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     Unit-test for task engine.
- *
- * Revision history:
- *     Nov., 2015, @qinzuoyan (Zuoyan Qin), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #include "runtime/task/task_engine.h"
+
+#include <stdio.h>
+
+#include "gtest/gtest.h"
+#include "runtime/global_config.h"
+#include "runtime/service_engine.h"
+#include "runtime/task/task.h"
 #include "test_utils.h"
-#include "runtime/tool_api.h"
-#include <gtest/gtest.h>
-#include <sstream>
+#include "utils/enum_helper.h"
+#include "utils/threadpool_code.h"
+
+namespace dsn {
+class task_queue;
+} // namespace dsn
 
 using namespace ::dsn;
 

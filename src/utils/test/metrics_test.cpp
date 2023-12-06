@@ -17,18 +17,31 @@
 
 #include "utils/metrics.h"
 
-#include <chrono>
-#include <thread>
-#include <tuple>
-#include <vector>
-
+#include <fmt/core.h>
+// IWYU pragma: no_include <gtest/gtest-message.h>
+// IWYU pragma: no_include <gtest/gtest-param-test.h>
+// IWYU pragma: no_include <gtest/gtest-test-part.h>
 #include <gtest/gtest.h>
+#include <rapidjson/document.h>
+#include <rapidjson/error/error.h>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <thread>
+#include <vector>
 
 #include "http/http_message_parser.h"
 #include "percentile_utils.h"
+#include "runtime/rpc/message_parser.h"
 #include "runtime/rpc/rpc_message.h"
-#include "utils/blob.h"
+#include "utils/errors.h"
+#include "utils/flags.h"
 #include "utils/rand.h"
+#include "utils/strings.h"
+#include "utils/test/nth_element_utils.h"
 
 namespace dsn {
 
@@ -2500,7 +2513,7 @@ void test_http_get_metrics(const std::string &request_string,
     ASSERT_TRUE(req_res.is_ok());
 
     const auto &req = req_res.get_value();
-    std::cout << "method: " << req.method << std::endl;
+    std::cout << "method: " << enum_to_string(req.method) << std::endl;
 
     http_response resp;
     test_get_metrics_handler(req, resp);
@@ -3032,11 +3045,11 @@ TEST_P(MetricsRetirementTest, RetireOldMetrics)
 }
 
 const std::vector<surviving_metrics_case> metrics_retirement_tests = {
-    {"server_117", true, true, true, true},
-    {"server_118", true, true, true, false},
-    {"server_119", true, true, false, false},
-    {"server_120", true, false, false, false},
-    {"server_121", false, false, false, false},
+    {std::string("server_117"), true, true, true, true},
+    {std::string("server_118"), true, true, true, false},
+    {std::string("server_119"), true, true, false, false},
+    {std::string("server_120"), true, false, false, false},
+    {std::string("server_121"), false, false, false, false},
 };
 
 INSTANTIATE_TEST_CASE_P(MetricsTest,

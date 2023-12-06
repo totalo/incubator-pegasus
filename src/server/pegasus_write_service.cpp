@@ -17,14 +17,38 @@
  * under the License.
  */
 
+#include <fmt/core.h>
+#include <rocksdb/status.h>
+#include <algorithm>
+#include <string>
+
 #include "base/pegasus_rpc_types.h"
+#include "bulk_load_types.h"
+#include "capacity_unit_calculator.h"
+#include "common/duplication_common.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
+#include "duplication_internal_types.h"
+#include "pegasus_value_schema.h"
 #include "pegasus_write_service.h"
 #include "pegasus_write_service_impl.h"
-#include "capacity_unit_calculator.h"
-
+#include "perf_counter/perf_counter.h"
+#include "rrdb/rrdb.code.definition.h"
+#include "rrdb/rrdb_types.h"
+#include "runtime/api_layer1.h"
 #include "runtime/message_utils.h"
-#include "common/replication.codes.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task_code.h"
+#include "server/pegasus_server_impl.h"
 #include "utils/defer.h"
+#include "utils/error_code.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
+
+namespace dsn {
+class blob;
+class message_ex;
+} // namespace dsn
 
 namespace pegasus {
 namespace server {
@@ -360,7 +384,7 @@ int pegasus_write_service::duplicate(int64_t decree,
         remove_rpc remove;
         if (request.task_code == dsn::apps::RPC_RRDB_RRDB_PUT ||
             request.task_code == dsn::apps::RPC_RRDB_RRDB_REMOVE) {
-            int err = 0;
+            int err = rocksdb::Status::kOk;
             if (request.task_code == dsn::apps::RPC_RRDB_RRDB_PUT) {
                 put = put_rpc(write);
                 err = _impl->batch_put(ctx, put.request(), put.response());
@@ -396,7 +420,7 @@ int pegasus_write_service::ingest_files(int64_t decree,
     resp.err = dsn::ERR_OK;
     // write empty put to flush decree
     resp.rocksdb_error = empty_put(decree);
-    if (resp.rocksdb_error != 0) {
+    if (resp.rocksdb_error != rocksdb::Status::kOk) {
         resp.err = dsn::ERR_TRY_AGAIN;
         return resp.rocksdb_error;
     }

@@ -47,26 +47,14 @@ jobs:
     name: Check Markdown links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - uses: gaurav-nelson/github-action-markdown-link-check@1.0.13
-
-  related_issue:
-    name: Check issue
-    runs-on: ubuntu-latest
-    steps:
-      - uses: neofinancial/ticket-check-action@v1.3.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          titleFormat: '%title%'
-          quiet: true
-          bodyRegex: '#(\d+)'
-          bodyURLRegex: 'http(s?):\/\/(github.com)(\/apache)(\/incubator-pegasus)(\/issues)\/\d+'
 
   dockerfile_linter:
     name: Lint Dockerfile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - uses: hadolint/hadolint-action@v3.1.0
         with:
           recursive: true
@@ -77,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "Checkout ${{ github.ref }} ( ${{ github.sha }} )"
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - name: Check License Header
         uses: apache/skywalking-eyes@main
         env:

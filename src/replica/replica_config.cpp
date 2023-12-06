@@ -24,31 +24,60 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     replica configuration management
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
+// IWYU pragma: no_include <boost/detail/basic_pointerbuf.hpp>
 #include <boost/lexical_cast.hpp>
-#include "replica.h"
-#include "mutation.h"
-#include "mutation_log.h"
-#include "replica_stub.h"
+#include <fmt/format.h>
+#include <stdint.h>
+#include <algorithm>
+#include <chrono>
+#include <ios>
+#include <map>
+#include <memory>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 #include "bulk_load/replica_bulk_loader.h"
-#include "runtime/security/access_controller.h"
-#include "split/replica_split_manager.h"
-#include "utils/fmt_logging.h"
-#include "replica/replication_app_base.h"
-#include "utils/fail_point.h"
-#include "utils/string_conv.h"
+#include "common/gpid.h"
 #include "common/replica_envs.h"
+#include "common/replication.codes.h"
+#include "common/replication_common.h"
+#include "common/replication_enums.h"
+#include "common/replication_other_types.h"
+#include "consensus_types.h"
+#include "dsn.layer2_types.h"
+#include "failure_detector/failure_detector_multimaster.h"
+#include "meta_admin_types.h"
+#include "metadata_types.h"
+#include "mutation.h"
+#include "replica.h"
+#include "replica/prepare_list.h"
+#include "replica/replica_context.h"
+#include "replica/replication_app_base.h"
+#include "replica_stub.h"
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/security/access_controller.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task.h"
+#include "split/replica_split_manager.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/fail_point.h"
+#include "utils/fmt_logging.h"
+#include "utils/string_conv.h"
+#include "absl/strings/string_view.h"
+#include "utils/strings.h"
+#include "utils/thread_access_checker.h"
 
 namespace dsn {
 namespace replication {
+
+// The configuration management part of replica.
 
 bool get_bool_envs(const std::map<std::string, std::string> &envs,
                    const std::string &name,
@@ -497,6 +526,8 @@ void replica::update_app_envs_internal(const std::map<std::string, std::string> 
 
     update_ac_allowed_users(envs);
 
+    update_ac_ranger_policies(envs);
+
     update_allow_ingest_behind(envs);
 
     update_deny_client(envs);
@@ -525,7 +556,15 @@ void replica::update_ac_allowed_users(const std::map<std::string, std::string> &
         allowed_users = iter->second;
     }
 
-    _access_controller->update(allowed_users);
+    _access_controller->update_allowed_users(allowed_users);
+}
+
+void replica::update_ac_ranger_policies(const std::map<std::string, std::string> &envs)
+{
+    auto iter = envs.find(replica_envs::REPLICA_ACCESS_CONTROLLER_RANGER_POLICIES);
+    if (iter != envs.end()) {
+        _access_controller->update_ranger_policies(iter->second);
+    }
 }
 
 void replica::update_allow_ingest_behind(const std::map<std::string, std::string> &envs)
@@ -617,7 +656,7 @@ bool replica::is_same_ballot_status_change_allowed(partition_status::type olds,
 bool replica::update_local_configuration(const replica_configuration &config,
                                          bool same_ballot /* = false*/)
 {
-    FAIL_POINT_INJECT_F("replica_update_local_configuration", [=](dsn::string_view) -> bool {
+    FAIL_POINT_INJECT_F("replica_update_local_configuration", [=](absl::string_view) -> bool {
         auto old_status = status();
         _config = config;
         LOG_INFO_PREFIX(
@@ -634,13 +673,14 @@ bool replica::update_local_configuration(const replica_configuration &config,
     partition_status::type old_status = status();
     ballot old_ballot = get_ballot();
 
-    // skip unncessary configuration change
-    if (old_status == config.status && old_ballot == config.ballot)
+    // skip unnecessary configuration change
+    if (old_status == config.status && old_ballot == config.ballot) {
         return true;
+    }
 
     // skip invalid change
     // but do not disable transitions to partition_status::PS_ERROR as errors
-    // must be handled immmediately
+    // must be handled immediately
     switch (old_status) {
     case partition_status::PS_ERROR: {
         LOG_WARNING_PREFIX("status change from {} @ {} to {} @ {} is not allowed",
@@ -716,8 +756,7 @@ bool replica::update_local_configuration(const replica_configuration &config,
         break;
     }
 
-    bool r = false;
-    uint64_t oldTs = _last_config_change_time_ms;
+    uint64_t old_ts = _last_config_change_time_ms;
     _config = config;
     // we should durable the new ballot to prevent the inconsistent state
     if (_config.ballot > old_ballot) {
@@ -827,8 +866,8 @@ bool replica::update_local_configuration(const replica_configuration &config,
             _prepare_list->truncate(_app->last_committed_decree());
 
             // using force cleanup now as all tasks must be done already
-            r = _potential_secondary_states.cleanup(true);
-            CHECK(r, "{}: potential secondary context cleanup failed", name());
+            CHECK_PREFIX_MSG(_potential_secondary_states.cleanup(true),
+                             "potential secondary context cleanup failed");
 
             check_state_completeness();
             break;
@@ -840,8 +879,8 @@ bool replica::update_local_configuration(const replica_configuration &config,
             _prepare_list->reset(_app->last_committed_decree());
             _potential_secondary_states.cleanup(false);
             // => do this in close as it may block
-            // r = _potential_secondary_states.cleanup(true);
-            // CHECK(r, "{}: potential secondary context cleanup failed", name());
+            // CHECK_PREFIX_MSG(_potential_secondary_states.cleanup(true),
+            //                  "potential secondary context cleanup failed");
             break;
         default:
             CHECK(false, "invalid execution path");
@@ -942,7 +981,7 @@ bool replica::update_local_configuration(const replica_configuration &config,
         _prepare_list->last_committed_decree(),
         _app->last_committed_decree(),
         _app->last_durable_decree(),
-        _last_config_change_time_ms - oldTs,
+        _last_config_change_time_ms - old_ts,
         boost::lexical_cast<std::string>(_config));
 
     if (status() != old_status) {
@@ -985,8 +1024,9 @@ bool replica::update_local_configuration(const replica_configuration &config,
 
 bool replica::update_local_configuration_with_no_ballot_change(partition_status::type s)
 {
-    if (status() == s)
+    if (status() == s) {
         return false;
+    }
 
     auto config = _config;
     config.status = s;

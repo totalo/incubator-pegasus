@@ -24,23 +24,21 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     Unit-test for perf counter.
- *
- * Revision history:
- *     Nov., 2015, @shengofsun (Weijie Sun), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
-#include "runtime/tool_api.h"
-#include <gtest/gtest.h>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <stdlib.h>
+#include <chrono>
+#include <functional>
+#include <memory>
 #include <thread>
-#include <cmath>
 #include <vector>
 
+#include "gtest/gtest.h"
+#include "perf_counter/perf_counter.h"
 #include "perf_counter/perf_counter_atomic.h"
+#include "utils/autoref_ptr.h"
 #include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/shared_io_service.h"
 
 using namespace dsn;
 using namespace dsn::tools;

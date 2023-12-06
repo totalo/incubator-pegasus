@@ -17,7 +17,29 @@
  * under the License.
  */
 
+// IWYU pragma: no_include <bits/getopt_core.h>
+#include <boost/algorithm/string/trim.hpp>
+#include <getopt.h>
+#include <stdio.h>
+#include <algorithm>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "client/replication_ddl_client.h"
+#include "common/gpid.h"
+#include "dsn.layer2_types.h"
+#include "meta_admin_types.h"
+#include "runtime/rpc/rpc_address.h"
+#include "shell/command_executor.h"
+#include "shell/command_helper.h"
 #include "shell/commands.h"
+#include "utils/error_code.h"
+#include "utils/string_conv.h"
+#include "utils/strings.h"
+#include "utils/time_utils.h"
 
 bool recover(command_executor *e, shell_context *sc, arguments args)
 {
@@ -272,7 +294,7 @@ bool ddd_diagnose(command_executor *e, shell_context *sc, arguments args)
             secondary_latest_dropped = pinfo.config.last_drops[pinfo.config.last_drops.size() - 2];
         int j = 0;
         for (const ddd_node_info &n : pinfo.dropped) {
-            char time_buf[30];
+            char time_buf[30] = {0};
             ::dsn::utils::time_ms_to_string(n.drop_time_ms, time_buf);
             out << "    dropped[" << j++ << "]: "
                 << "node(" << n.node.to_string() << "), "

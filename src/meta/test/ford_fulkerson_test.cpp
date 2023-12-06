@@ -15,8 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <stdint.h>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
+#include "common/gpid.h"
+#include "dsn.layer2_types.h"
+#include "gtest/gtest.h"
 #include "meta/load_balance_policy.h"
+#include "meta/meta_data.h"
+#include "runtime/rpc/rpc_address.h"
 
 namespace dsn {
 namespace replication {

@@ -18,7 +18,10 @@
  */
 
 #include "common/common.h"
-#include <gtest/gtest.h>
+
+#include <memory>
+
+#include "gtest/gtest.h"
 
 namespace dsn {
 TEST(duplication_common, get_current_cluster_name)

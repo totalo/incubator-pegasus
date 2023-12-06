@@ -24,25 +24,34 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     inject failure through join points to mimic all network/disk/slow execution etc. failures
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #include "runtime/fault_injector.h"
-#include "runtime/api_task.h"
-#include "runtime/api_layer1.h"
-#include "runtime/app_model.h"
-#include "utils/api_utilities.h"
-#include "utils/rand.h"
+
+#include <chrono>
+#include <cstdint>
+#include <string>
+#include <thread>
+#include <vector>
+
 #include "aio/aio_task.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/task/task.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_spec.h"
+#include "utils/blob.h"
+#include "utils/config_api.h"
+#include "utils/config_helper.h"
+#include "utils/error_code.h"
+#include "utils/extensible_object.h"
+#include "utils/fmt_logging.h"
+#include "utils/join_point.h"
+#include "utils/rand.h"
 
 namespace dsn {
+struct service_spec;
+
 namespace tools {
+
+// Inject failure through join points to mimic all network/disk/slow execution etc. failures.
 
 struct fj_opt
 {

@@ -24,22 +24,14 @@
 * THE SOFTWARE.
 */
 
-/*
-* Description:
-*     message parser for browser-generated http request
-*
-* Revision history:
-*     Jun. 2016, Zuoyan Qin, first version
-*     xxxx-xx-xx, author, fix bug about xxx
-*/
-
 #pragma once
 
 #include "runtime/rpc/message_parser.h"
-#include "runtime/rpc/rpc_message.h"
-#include "utils/ports.h"
 
 namespace dsn {
+class message_ex;
+
+// Message parser for browser-generated http request.
 class dsn_message_parser : public message_parser
 {
 public:

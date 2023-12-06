@@ -24,27 +24,60 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     replication learning process
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
+#include <inttypes.h>
+#include <stdio.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-#include "replica.h"
+#include <fmt/std.h> // IWYU pragma: keep
+
+#include "common/fs_manager.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
+#include "common/replication_enums.h"
+#include "common/replication_other_types.h"
+#include "consensus_types.h"
+#include "dsn.layer2_types.h"
+#include "metadata_types.h"
 #include "mutation.h"
 #include "mutation_log.h"
-#include "replica_stub.h"
+#include "nfs/nfs_node.h"
+#include "perf_counter/perf_counter.h"
+#include "perf_counter/perf_counter_wrapper.h"
+#include "replica.h"
 #include "replica/duplication/replica_duplicator_manager.h"
-
-#include "utils/filesystem.h"
+#include "replica/prepare_list.h"
+#include "replica/replica_context.h"
 #include "replica/replication_app_base.h"
+#include "replica_stub.h"
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task.h"
+#include "utils/autoref_ptr.h"
+#include "utils/binary_reader.h"
+#include "utils/binary_writer.h"
+#include "utils/blob.h"
+#include "utils/error_code.h"
+#include "utils/filesystem.h"
+#include "utils/flags.h"
 #include "utils/fmt_logging.h"
+#include "utils/thread_access_checker.h"
 
 namespace dsn {
 namespace replication {
+
+// The replication learning process part of replica.
 
 DSN_DEFINE_int32(replication,
                  learn_app_max_concurrent_count,
@@ -505,7 +538,7 @@ void replica::on_learn(dsn::message_ex *msg, const learn_request &request)
                     err);
             } else {
                 response.base_local_dir = _app->data_dir();
-                response.__set_replica_disk_tag(get_replica_disk_tag());
+                response.__set_replica_disk_tag(_dir_node->tag);
                 LOG_INFO_PREFIX(
                     "on_learn[{:#018x}]: learner = {}, get app learn state succeed, "
                     "learned_meta_size = {}, learned_file_count = {}, learned_to_decree = {}",
@@ -872,8 +905,9 @@ void replica::on_learn_reply(error_code err, learn_request &&req, learn_response
             resp.replica_disk_tag,
             resp.base_local_dir,
             resp.state.files,
-            get_replica_disk_tag(),
+            _dir_node->tag,
             learn_dir,
+            get_gpid(),
             true, // overwrite
             high_priority,
             LPC_REPLICATION_COPY_REMOTE_FILES,
@@ -1198,6 +1232,14 @@ void replica::handle_learning_error(error_code err, bool is_local_error)
         err,
         is_local_error ? "local_error" : "remote error");
 
+    if (is_local_error) {
+        if (err == ERR_DISK_IO_ERROR) {
+            _dir_node->status = disk_status::IO_ERROR;
+        } else if (err == ERR_RDB_CORRUPTION) {
+            _data_corrupted = true;
+        }
+    }
+
     _stub->_counter_replicas_learning_recent_learn_fail_count->increment();
 
     update_local_configuration_with_no_ballot_change(
@@ -1397,7 +1439,7 @@ void replica::on_add_learner(const group_check_request &request)
 error_code replica::apply_learned_state_from_private_log(learn_state &state)
 {
     bool duplicating = is_duplication_master();
-    // if no dunplicate, learn_start_decree=last_commit decree, step_back means whether
+    // if no duplicate, learn_start_decree=last_commit decree, step_back means whether
     // `learn_start_decree`should be stepped back to include all the
     // unconfirmed when duplicating in this round of learn. default is false
     bool step_back = false;
@@ -1452,17 +1494,23 @@ error_code replica::apply_learned_state_from_private_log(learn_state &state)
                        _app->last_committed_decree(),
                        FLAGS_max_mutation_count_in_prepare_list,
                        [this, duplicating, step_back](mutation_ptr &mu) {
-                           if (mu->data.header.decree == _app->last_committed_decree() + 1) {
-                               // TODO: assign the returned error_code to err and check it
-                               _app->apply_mutation(mu);
+                           if (mu->data.header.decree != _app->last_committed_decree() + 1) {
+                               return;
+                           }
 
-                               // appends logs-in-cache into plog to ensure them can be duplicated.
-                               // if current case is step back, it means the logs has been reserved
-                               // through `reset_form` above
-                               if (duplicating && !step_back) {
-                                   _private_log->append(
-                                       mu, LPC_WRITE_REPLICATION_LOG_COMMON, &_tracker, nullptr);
-                               }
+                           // TODO: assign the returned error_code to err and check it
+                           auto ec = _app->apply_mutation(mu);
+                           if (ec != ERR_OK) {
+                               handle_local_failure(ec);
+                               return;
+                           }
+
+                           // appends logs-in-cache into plog to ensure them can be duplicated.
+                           // if current case is step back, it means the logs has been reserved
+                           // through `reset_form` above
+                           if (duplicating && !step_back) {
+                               _private_log->append(
+                                   mu, LPC_WRITE_REPLICATION_LOG_COMMON, &_tracker, nullptr);
                            }
                        });
 

@@ -39,17 +39,17 @@ if [ ! -f src/include/pegasus/git_commit.h ]; then
     exit 1
 fi
 
-if [ ! -f ${BUILD_DIR}/output/bin/pegasus_server/pegasus_server ]; then
-    echo "ERROR: ${BUILD_DIR}/output/bin/pegasus_server/pegasus_server not found"
+if [ ! -f ${BUILD_LATEST_DIR}/output/bin/pegasus_server/pegasus_server ]; then
+    echo "ERROR: ${BUILD_LATEST_DIR}/output/bin/pegasus_server/pegasus_server not found"
     exit 1
 fi
 
-if [ ! -f src/builder/CMakeCache.txt ]; then
-    echo "ERROR: src/builder/CMakeCache.txt not found"
+if [ ! -f ${BUILD_LATEST_DIR}/CMakeCache.txt ]; then
+    echo "ERROR: ${BUILD_LATEST_DIR}/CMakeCache.txt not found"
     exit 1
 fi
 
-if egrep -i "CMAKE_BUILD_TYPE:STRING\=debug" src/builder/CMakeCache.txt; then
+if egrep -i "CMAKE_BUILD_TYPE:STRING\=debug" ${BUILD_LATEST_DIR}/CMakeCache.txt; then
     build_type=debug
 else
     build_type=release
@@ -110,23 +110,20 @@ while [[ $# > 0 ]]; do
 done
 
 mkdir -p ${pack}/bin
-copy_file ${BUILD_DIR}/output/bin/pegasus_server/pegasus_server ${pack}/bin
-copy_file ${BUILD_DIR}/output/lib/libdsn_meta_server.so ${pack}/bin
-copy_file ${BUILD_DIR}/output/lib/libdsn_replica_server.so ${pack}/bin
-copy_file ${BUILD_DIR}/output/lib/libdsn_utils.so ${pack}/bin
-copy_file ./thirdparty/output/lib/libPoco*.so.* ${pack}/bin
+copy_file ${BUILD_LATEST_DIR}/output/bin/pegasus_server/pegasus_server ${pack}/bin
+copy_file ${BUILD_LATEST_DIR}/output/lib/libdsn_meta_server.so ${pack}/bin
+copy_file ${BUILD_LATEST_DIR}/output/lib/libdsn_replica_server.so ${pack}/bin
+copy_file ${BUILD_LATEST_DIR}/output/lib/libdsn_utils.so ${pack}/bin
 
 if [ "$use_jemalloc" == "on" ]; then
     copy_file ./thirdparty/output/lib/libjemalloc.so.2 ${pack}/bin
     copy_file ./thirdparty/output/lib/libprofiler.so.0 ${pack}/bin
 else
-    copy_file ./thirdparty/output/lib/libtcmalloc_and_profiler.so.4 ${pack}/bin
+    copy_file ./thirdparty/output/lib/libtcmalloc_and_profiler.so ${pack}/bin
 fi
 
 copy_file ./thirdparty/output/lib/libboost*.so.1.69.0 ${pack}/bin
 copy_file ./thirdparty/output/lib/libhdfs* ${pack}/bin
-copy_file ./thirdparty/output/lib/libsasl*.so.* ${pack}/bin
-copy_file ./thirdparty/output/lib/libcom_err*.so.* ${pack}/bin
 copy_file ./scripts/sendmail.sh ${pack}/bin
 copy_file ./src/server/config.ini ${pack}/bin
 copy_file ./src/server/config.min.ini ${pack}/bin

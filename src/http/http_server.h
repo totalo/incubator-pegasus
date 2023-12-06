@@ -19,10 +19,18 @@
 
 #pragma once
 
+#include <functional>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+
+#include "http_method.h"
 #include "runtime/task/task_code.h"
 #include "utils/blob.h"
 #include "utils/errors.h"
 #include "utils/flags.h"
+#include "utils/threadpool_code.h"
 
 namespace dsn {
 
@@ -31,13 +39,8 @@ DSN_DECLARE_bool(enable_http_server);
 /// The rpc code for all the HTTP RPCs.
 DEFINE_TASK_CODE_RPC(RPC_HTTP_SERVICE, TASK_PRIORITY_COMMON, THREAD_POOL_DEFAULT);
 
-enum http_method
-{
-    HTTP_METHOD_GET = 1,
-    HTTP_METHOD_POST = 2,
-};
-
 class message_ex;
+
 struct http_request
 {
     static error_with<http_request> parse(dsn::message_ex *m);
@@ -139,6 +142,8 @@ protected:
 //     .add_argument("app_name", HTTP_ARG_STRING);
 // ```
 extern http_call &register_http_call(std::string full_path);
+
+extern void deregister_http_call(const std::string &full_path);
 
 // Starts serving HTTP requests.
 // The internal HTTP server will reuse the rDSN server port.

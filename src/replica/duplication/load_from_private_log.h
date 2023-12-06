@@ -18,16 +18,24 @@
 #pragma once
 
 #include <gtest/gtest_prod.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <chrono>
 
+#include "common/replication_other_types.h"
 #include "mutation_batch.h"
-#include "runtime/pipeline.h"
+#include "perf_counter/perf_counter_wrapper.h"
 #include "replica/duplication/mutation_duplicator.h"
+#include "replica/log_file.h"
 #include "replica/mutation_log.h"
-#include "utils/errors.h"
+#include "replica/replica_base.h"
+#include "runtime/pipeline.h"
+#include "utils/chrono_literals.h"
 
 namespace dsn {
 namespace replication {
 
+class replica;
 class replica_duplicator;
 class replica_stub;
 
@@ -52,7 +60,7 @@ public:
 
     /// Find the log file that contains `_start_decree`.
     void find_log_file_to_start();
-    void find_log_file_to_start(std::map<int, log_file_ptr> log_files);
+    void find_log_file_to_start(const mutation_log::log_file_map_by_index &log_files);
 
     void replay_log_block();
 

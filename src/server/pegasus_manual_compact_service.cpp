@@ -19,14 +19,25 @@
 
 #include "pegasus_manual_compact_service.h"
 
-#include "utils/fmt_logging.h"
-#include "common/replication.codes.h"
-#include "runtime/task/async_calls.h"
-#include "utils/string_conv.h"
-#include "utils/time_utils.h"
+#include <limits.h>
+#include <rocksdb/options.h>
+#include <list>
+#include <ostream>
+#include <set>
+#include <utility>
 
 #include "base/pegasus_const.h"
+#include "common/replication.codes.h"
 #include "pegasus_server_impl.h"
+#include "perf_counter/perf_counter.h"
+#include "runtime/api_layer1.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task_code.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/string_conv.h"
+#include "utils/strings.h"
+#include "utils/time_utils.h"
 
 namespace pegasus {
 namespace server {
@@ -325,7 +336,7 @@ std::string pegasus_manual_compact_service::query_compact_state() const
     uint64_t last_time_used_ms = _manual_compact_last_time_used_ms.load();
     std::stringstream state;
     if (last_finish_time_ms > 0) {
-        char str[24];
+        char str[24] = {0};
         dsn::utils::time_ms_to_string(last_finish_time_ms, str);
         state << "last finish at [" << str << "]";
     } else {
@@ -337,13 +348,13 @@ std::string pegasus_manual_compact_service::query_compact_state() const
     }
 
     if (enqueue_time_ms > 0) {
-        char str[24];
+        char str[24] = {0};
         dsn::utils::time_ms_to_string(enqueue_time_ms, str);
         state << ", recent enqueue at [" << str << "]";
     }
 
     if (start_time_ms > 0) {
-        char str[24];
+        char str[24] = {0};
         dsn::utils::time_ms_to_string(start_time_ms, str);
         state << ", recent start at [" << str << "]";
     }

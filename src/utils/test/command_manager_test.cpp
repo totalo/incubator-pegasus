@@ -18,8 +18,9 @@
 #include "utils/command_manager.h"
 
 #include <boost/algorithm/string/join.hpp>
-#include <fmt/ostream.h>
-#include <gtest/gtest.h>
+#include <fmt/core.h>
+
+#include "gtest/gtest.h"
 
 using std::string;
 using std::vector;

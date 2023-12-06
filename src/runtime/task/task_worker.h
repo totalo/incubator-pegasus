@@ -24,24 +24,21 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     task worker (thread) abstraction
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
-#include "task_queue.h"
-#include "utils/extensible_object.h"
-#include "utils/synchronize.h"
-#include "perf_counter/perf_counter.h"
+#include <stdint.h>
+#include <memory>
+#include <string>
 #include <thread>
 
+#include "utils/extensible_object.h"
+#include "utils/join_point.h"
+#include "utils/synchronize.h"
+#include "utils/threadpool_spec.h"
+
 namespace dsn {
+class task_queue;
+class task_worker_pool;
 
 /*!
 @addtogroup tool-api-providers
@@ -50,6 +47,7 @@ namespace dsn {
 /*!
  task worker processes the input tasks from the bound task queue
 */
+// The task worker (a.k.a. thread) abstraction class.
 class task_worker : public extensible_object<task_worker, 4>
 {
 public:

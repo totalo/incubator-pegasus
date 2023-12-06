@@ -24,19 +24,14 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
+#include <stdint.h>
+#include <utility>
 
-#include <cinttypes>
-#include "runtime/rpc/rpc_address.h"
-#include "runtime/rpc/group_address.h"
 #include "failure_detector/failure_detector_multimaster.h"
+#include "fd_types.h"
+#include "runtime/rpc/group_address.h"
+#include "runtime/rpc/rpc_address.h"
+#include "utils/error_code.h"
 #include "utils/rand.h"
 
 namespace dsn {

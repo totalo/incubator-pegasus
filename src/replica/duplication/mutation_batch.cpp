@@ -15,11 +15,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "utils/fmt_logging.h"
-#include "runtime/message_utils.h"
+#include <fmt/core.h>
+#include <functional>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
 
-#include "replica_duplicator.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
+#include "consensus_types.h"
+#include "metadata_types.h"
 #include "mutation_batch.h"
+#include "perf_counter/perf_counter.h"
+#include "replica_duplicator.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_spec.h"
+#include "utils/autoref_ptr.h"
+#include "utils/blob.h"
+#include "utils/error_code.h"
+#include "utils/fmt_logging.h"
+#include "absl/strings/string_view.h"
 
 namespace dsn {
 namespace replication {
@@ -132,8 +148,8 @@ mutation_batch::mutation_batch(replica_duplicator *r) : replica_base(r)
     // This helps for debugging.
     replica_base base(
         r->get_gpid(), std::string("mutation_batch@") + r->replica_name(), r->app_name());
-    _mutation_buffer =
-        make_unique<mutation_buffer>(&base, 0, PREPARE_LIST_NUM_ENTRIES, [this](mutation_ptr &mu) {
+    _mutation_buffer = std::make_unique<mutation_buffer>(
+        &base, 0, PREPARE_LIST_NUM_ENTRIES, [this](mutation_ptr &mu) {
             // committer
             add_mutation_if_valid(mu, _start_decree);
         });

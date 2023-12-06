@@ -24,31 +24,49 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     the meta server's server_state, definition file
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     2016-04-25, Weijie Sun(sunweijie at xiaomi.com), refactor
- */
-
 #pragma once
 
+// IWYU pragma: no_include <boost/detail/basic_pointerbuf.hpp>
 #include <boost/lexical_cast.hpp>
-#include "common/replication_other_types.h"
-#include "block_service/block_service.h"
-#include "perf_counter/perf_counter_wrapper.h"
-#include "runtime/task/task_tracker.h"
 #include <gtest/gtest_prod.h>
-#include <unordered_map>
+#include <stdint.h>
+#include <functional>
+#include <map>
+#include <memory>
+#include <ostream>
+#include <string>
+#include <utility>
+#include <vector>
 
-#include "common/replication_common.h"
+#include "common/gpid.h"
+#include "common/manual_compact.h"
+#include "dsn.layer2_types.h"
+#include "meta/meta_rpc_types.h"
 #include "meta_data.h"
-#include "meta_service.h"
+#include "perf_counter/perf_counter_wrapper.h"
+#include "runtime/task/task.h"
+#include "runtime/task/task_tracker.h"
+#include "utils/error_code.h"
+#include "utils/zlocks.h"
 
 namespace dsn {
+class blob;
+class command_deregister;
+class message_ex;
+class rpc_address;
+
 namespace replication {
+class configuration_balancer_request;
+class configuration_balancer_response;
+class configuration_list_apps_request;
+class configuration_list_apps_response;
+class configuration_proposal_action;
+class configuration_recovery_request;
+class configuration_recovery_response;
+class configuration_restore_request;
+class configuration_update_request;
+class query_app_info_response;
+class query_replica_info_response;
 
 namespace test {
 class test_checker;
@@ -146,7 +164,8 @@ public:
     void recall_app(dsn::message_ex *msg);
     void rename_app(configuration_rename_app_rpc rpc);
     void list_apps(const configuration_list_apps_request &request,
-                   configuration_list_apps_response &response);
+                   configuration_list_apps_response &response,
+                   dsn::message_ex *msg = nullptr) const;
     void restore_app(dsn::message_ex *msg);
 
     // app env operations

@@ -15,12 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
+#include <fmt/core.h>
+#include <map>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <utility>
 
+#include "gtest/gtest.h"
 #include "http/builtin_http_calls.h"
 #include "http/http_call_registry.h"
+#include "http/http_server.h"
 #include "replica/replica_http_service.h"
+#include "replica/test/mock_utils.h"
 #include "replica/test/replica_test_base.h"
+#include "utils/flags.h"
+#include "utils/test_macros.h"
 
 using std::map;
 using std::string;
@@ -42,7 +52,16 @@ public:
         stub->initialize_start();
 
         http_call_registry::instance().clear_paths();
-        _http_svc = dsn::make_unique<replica_http_service>(stub.get());
+        _http_svc = std::make_unique<replica_http_service>(stub.get());
+    }
+
+    void SetUp() override
+    {
+        // Reset config_sync_interval_ms to 30000.
+        NO_FATALS(test_update_config({{"config_sync_interval_ms", "30000"}},
+                                     R"({"update_status":"ERR_OK"})"
+                                     "\n"));
+        NO_FATALS(test_check_config("config_sync_interval_ms", "30000"));
     }
 
     void test_update_config(const map<string, string> &configs, const string &expect_resp)
@@ -75,40 +94,42 @@ private:
     std::unique_ptr<replica_http_service> _http_svc;
 };
 
-TEST_F(replica_http_service_test, update_config_handler)
+INSTANTIATE_TEST_CASE_P(, replica_http_service_test, ::testing::Values(false, true));
+
+TEST_P(replica_http_service_test, update_config_handler)
 {
     // Test the default value.
-    test_check_config("config_sync_interval_ms", "30000");
+    NO_FATALS(test_check_config("config_sync_interval_ms", "30000"));
     ASSERT_EQ(30000, FLAGS_config_sync_interval_ms);
 
     // Update config failed and value not changed.
-    test_update_config(
+    NO_FATALS(test_update_config(
         {},
         R"({"update_status":"ERR_INVALID_PARAMETERS: there should be exactly one config to be updated once"})"
-        "\n");
-    test_check_config("config_sync_interval_ms", "30000");
+        "\n"));
+    NO_FATALS(test_check_config("config_sync_interval_ms", "30000"));
     ASSERT_EQ(30000, FLAGS_config_sync_interval_ms);
 
     // Update config failed and value not changed.
-    test_update_config(
-        {{"config_sync_interval_ms", "10"}, {"fds_write_limit_rate", "50"}},
+    NO_FATALS(test_update_config(
+        {{"config_sync_interval_ms", "10"}, {"hdfs_write_limit_rate_mb_per_sec", "50"}},
         R"({"update_status":"ERR_INVALID_PARAMETERS: there should be exactly one config to be updated once"})"
-        "\n");
-    test_check_config("config_sync_interval_ms", "30000");
+        "\n"));
+    NO_FATALS(test_check_config("config_sync_interval_ms", "30000"));
     ASSERT_EQ(30000, FLAGS_config_sync_interval_ms);
 
     // Update config failed and value not changed.
-    test_update_config({{"config_sync_interval_ms", "-1"}},
-                       R"({"update_status":"ERR_INVALID_PARAMETERS: -1 is invalid"})"
-                       "\n");
-    test_check_config("config_sync_interval_ms", "30000");
+    NO_FATALS(test_update_config({{"config_sync_interval_ms", "-1"}},
+                                 R"({"update_status":"ERR_INVALID_PARAMETERS: -1 is invalid"})"
+                                 "\n"));
+    NO_FATALS(test_check_config("config_sync_interval_ms", "30000"));
     ASSERT_EQ(30000, FLAGS_config_sync_interval_ms);
 
     // Update config success and value changed.
-    test_update_config({{"config_sync_interval_ms", "10"}},
-                       R"({"update_status":"ERR_OK"})"
-                       "\n");
-    test_check_config("config_sync_interval_ms", "10");
+    NO_FATALS(test_update_config({{"config_sync_interval_ms", "10"}},
+                                 R"({"update_status":"ERR_OK"})"
+                                 "\n"));
+    NO_FATALS(test_check_config("config_sync_interval_ms", "10"));
     ASSERT_EQ(10, FLAGS_config_sync_interval_ms);
 }
 

@@ -41,7 +41,7 @@ jobs:
   build_push_src_docker_images:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
@@ -71,14 +71,12 @@ jobs:
       fail-fast: false
       matrix:
         osversion:
-          - ubuntu1604
           - ubuntu1804
           - ubuntu2004
           - ubuntu2204
-          - centos6
           - centos7
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
@@ -109,14 +107,12 @@ jobs:
       fail-fast: false
       matrix:
         osversion:
-          - ubuntu1604
           - ubuntu1804
           - ubuntu2004
           - ubuntu2204
-          - centos6
           - centos7
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
@@ -148,9 +144,9 @@ jobs:
       fail-fast: false
       matrix:
         osversion:
-          - ubuntu1804
+          - ubuntu2204
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
@@ -171,7 +167,7 @@ jobs:
           build-args: |
             GITHUB_BRANCH=${{ github.ref_name }}
             OS_VERSION=${{ matrix.osversion }}
-            ROCKSDB_PORTABLE=ON
+            ROCKSDB_PORTABLE=1
             HADOOP_BIN_PATH=hadoop-bin
             ZOOKEEPER_BIN_PATH=zookeeper-bin
       - name: Image digest
@@ -184,9 +180,9 @@ jobs:
       fail-fast: false
       matrix:
         osversion:
-          - ubuntu1804
+          - ubuntu2204
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v1
       - name: Set up Docker Buildx
@@ -207,7 +203,7 @@ jobs:
           build-args: |
             GITHUB_BRANCH=${{ github.ref_name }}
             OS_VERSION=${{ matrix.osversion }}
-            ROCKSDB_PORTABLE=ON
+            ROCKSDB_PORTABLE=1
             USE_JEMALLOC=ON
             HADOOP_BIN_PATH=hadoop-bin
             ZOOKEEPER_BIN_PATH=zookeeper-bin

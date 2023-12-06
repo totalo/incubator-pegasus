@@ -17,19 +17,51 @@
  * under the License.
  */
 
-#include "pegasus_server_impl.h"
-
-#include <unordered_map>
-#include "utils/flags.h"
+#include <fmt/core.h>
+#include <rocksdb/cache.h>
 #include <rocksdb/filter_policy.h>
+#include <rocksdb/options.h>
+#include <rocksdb/rate_limiter.h>
+#include <rocksdb/statistics.h>
+#include <rocksdb/table.h>
+#include <rocksdb/write_buffer_manager.h>
+#include <stdio.h>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "common/gpid.h"
+#include "hashkey_transform.h"
+#include "hotkey_collector.h"
+#include "pegasus_event_listener.h"
+#include "pegasus_server_impl.h"
+#include "pegasus_value_schema.h"
+#include "perf_counter/perf_counter.h"
+#include "perf_counter/perf_counter_wrapper.h"
+#include "replica_admin_types.h"
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/rpc_address.h"
+#include "server/capacity_unit_calculator.h" // IWYU pragma: keep
+#include "server/key_ttl_compaction_filter.h"
+#include "server/meta_store.h" // IWYU pragma: keep
+#include "server/pegasus_read_service.h"
+#include "server/pegasus_server_write.h" // IWYU pragma: keep
+#include "server/range_read_limiter.h"
+#include "utils/env.h"
+#include "utils/flags.h"
+#include "utils/fmt_logging.h"
+#include "utils/strings.h"
 #include "utils/token_bucket_throttling_controller.h"
 
-#include "capacity_unit_calculator.h"
-#include "hashkey_transform.h"
-#include "meta_store.h"
-#include "pegasus_event_listener.h"
-#include "pegasus_server_write.h"
-#include "hotkey_collector.h"
+namespace dsn {
+namespace replication {
+class replica;
+} // namespace replication
+} // namespace dsn
 
 namespace pegasus {
 namespace server {
@@ -106,7 +138,7 @@ DSN_DEFINE_bool(pegasus.server,
 DSN_DEFINE_bool(pegasus.server,
                 rocksdb_disable_table_block_cache,
                 false,
-                "rocksdb tbl_opts.no_block_cache");
+                "rocksdb _tbl_opts.no_block_cache");
 DSN_DEFINE_bool(pegasus.server,
                 rocksdb_enable_write_buffer_manager,
                 false,
@@ -170,7 +202,7 @@ DSN_DEFINE_bool(pegasus.server,
 // treated as 4, a value of 19 will be treated as 16.
 //
 // Default: 0 (disabled)
-// see https://github.com/XiaoMi/pegasus-rocksdb/blob/v6.6.4-compatible/include/rocksdb/table.h#L247
+// see https://github.com/facebook/rocksdb/blob/v6.6.4/include/rocksdb/table.h#L247
 DSN_DEFINE_int32(pegasus.server,
                  read_amp_bytes_per_bit,
                  0,
@@ -391,6 +423,7 @@ pegasus_server_impl::pegasus_server_impl(dsn::replication::replica *r)
     _rng_rd_opts.rocksdb_iteration_threshold_time_ms = FLAGS_rocksdb_iteration_threshold_time_ms;
 
     // init rocksdb::DBOptions
+    _db_opts.env = dsn::utils::PegasusEnv(dsn::utils::FileDataType::kSensitive);
     _db_opts.create_if_missing = true;
     // atomic flush data CF and meta CF, aim to keep consistency of 'last flushed decree' in meta CF
     // and data in data CF.
@@ -435,12 +468,11 @@ pegasus_server_impl::pegasus_server_impl(dsn::replication::replica *r)
     CHECK(parse_compression_types("none", _meta_cf_opts.compression_per_level),
           "parse rocksdb_compression_type failed.");
 
-    rocksdb::BlockBasedTableOptions tbl_opts;
-    tbl_opts.read_amp_bytes_per_bit = FLAGS_read_amp_bytes_per_bit;
+    _tbl_opts.read_amp_bytes_per_bit = FLAGS_read_amp_bytes_per_bit;
 
     if (FLAGS_rocksdb_disable_table_block_cache) {
-        tbl_opts.no_block_cache = true;
-        tbl_opts.block_restart_interval = 4;
+        _tbl_opts.no_block_cache = true;
+        _tbl_opts.block_restart_interval = 4;
     } else {
         // If block cache is enabled, all replicas on this server will share the same block cache
         // object. It's convenient to control the total memory used by this server, and the LRU
@@ -453,7 +485,7 @@ pegasus_server_impl::pegasus_server_impl(dsn::replication::replica *r)
         });
 
         // every replica has the same block cache
-        tbl_opts.block_cache = _s_block_cache;
+        _tbl_opts.block_cache = _s_block_cache;
     }
 
     // FLAGS_rocksdb_limiter_max_write_megabytes_per_sec <= 0 means close the rate limit.
@@ -489,7 +521,7 @@ pegasus_server_impl::pegasus_server_impl(dsn::replication::replica *r)
                             FLAGS_rocksdb_total_size_across_write_buffer);
             _s_write_buffer_manager = std::make_shared<rocksdb::WriteBufferManager>(
                 static_cast<size_t>(FLAGS_rocksdb_total_size_across_write_buffer),
-                tbl_opts.block_cache);
+                _tbl_opts.block_cache);
         });
         _db_opts.write_buffer_manager = _s_write_buffer_manager;
     }
@@ -510,33 +542,33 @@ pegasus_server_impl::pegasus_server_impl(dsn::replication::replica *r)
     CHECK(index_type_item != INDEX_TYPE_STRING_MAP.end(),
           "[pegasus.server]rocksdb_index_type should be one among binary_search, "
           "hash_search, two_level_index_search or binary_search_with_first_key.");
-    tbl_opts.index_type = index_type_item->second;
+    _tbl_opts.index_type = index_type_item->second;
     LOG_INFO_PREFIX("rocksdb_index_type = {}", FLAGS_rocksdb_index_type);
 
-    tbl_opts.partition_filters = FLAGS_rocksdb_partition_filters;
+    _tbl_opts.partition_filters = FLAGS_rocksdb_partition_filters;
     // TODO(yingchun): clean up these useless log ?
-    LOG_INFO_PREFIX("rocksdb_partition_filters = {}", tbl_opts.partition_filters);
+    LOG_INFO_PREFIX("rocksdb_partition_filters = {}", _tbl_opts.partition_filters);
 
-    tbl_opts.metadata_block_size = FLAGS_rocksdb_metadata_block_size;
-    LOG_INFO_PREFIX("rocksdb_metadata_block_size = {}", tbl_opts.metadata_block_size);
+    _tbl_opts.metadata_block_size = FLAGS_rocksdb_metadata_block_size;
+    LOG_INFO_PREFIX("rocksdb_metadata_block_size = {}", _tbl_opts.metadata_block_size);
 
-    tbl_opts.cache_index_and_filter_blocks = FLAGS_rocksdb_cache_index_and_filter_blocks;
+    _tbl_opts.cache_index_and_filter_blocks = FLAGS_rocksdb_cache_index_and_filter_blocks;
     LOG_INFO_PREFIX("rocksdb_cache_index_and_filter_blocks = {}",
-                    tbl_opts.cache_index_and_filter_blocks);
+                    _tbl_opts.cache_index_and_filter_blocks);
 
-    tbl_opts.pin_top_level_index_and_filter = FLAGS_rocksdb_pin_top_level_index_and_filter;
+    _tbl_opts.pin_top_level_index_and_filter = FLAGS_rocksdb_pin_top_level_index_and_filter;
     LOG_INFO_PREFIX("rocksdb_pin_top_level_index_and_filter = {}",
-                    tbl_opts.pin_top_level_index_and_filter);
+                    _tbl_opts.pin_top_level_index_and_filter);
 
-    tbl_opts.cache_index_and_filter_blocks_with_high_priority =
+    _tbl_opts.cache_index_and_filter_blocks_with_high_priority =
         FLAGS_rocksdb_cache_index_and_filter_blocks_with_high_priority;
     LOG_INFO_PREFIX("rocksdb_cache_index_and_filter_blocks_with_high_priority = {}",
-                    tbl_opts.cache_index_and_filter_blocks_with_high_priority);
+                    _tbl_opts.cache_index_and_filter_blocks_with_high_priority);
 
-    tbl_opts.pin_l0_filter_and_index_blocks_in_cache =
+    _tbl_opts.pin_l0_filter_and_index_blocks_in_cache =
         FLAGS_rocksdb_pin_l0_filter_and_index_blocks_in_cache;
     LOG_INFO_PREFIX("rocksdb_pin_l0_filter_and_index_blocks_in_cache = {}",
-                    tbl_opts.pin_l0_filter_and_index_blocks_in_cache);
+                    _tbl_opts.pin_l0_filter_and_index_blocks_in_cache);
 
     // Bloom filter configurations.
     if (!FLAGS_rocksdb_disable_bloom_filter) {
@@ -553,8 +585,8 @@ pegasus_server_impl::pegasus_server_impl(dsn::replication::replica *r)
         //                                 50         |      0.225453      |      ~0.00003
         // Recommend using no more than three decimal digits after the decimal point, as in 6.667.
         // More details: https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter
-        tbl_opts.format_version = FLAGS_rocksdb_format_version;
-        tbl_opts.filter_policy.reset(
+        _tbl_opts.format_version = FLAGS_rocksdb_format_version;
+        _tbl_opts.filter_policy.reset(
             rocksdb::NewBloomFilterPolicy(FLAGS_rocksdb_bloom_filter_bits_per_key, false));
 
         if (dsn::utils::equals(FLAGS_rocksdb_filter_type, "prefix")) {
@@ -565,8 +597,8 @@ pegasus_server_impl::pegasus_server_impl(dsn::replication::replica *r)
         }
     }
 
-    _data_cf_opts.table_factory.reset(NewBlockBasedTableFactory(tbl_opts));
-    _meta_cf_opts.table_factory.reset(NewBlockBasedTableFactory(tbl_opts));
+    _data_cf_opts.table_factory.reset(NewBlockBasedTableFactory(_tbl_opts));
+    _meta_cf_opts.table_factory.reset(NewBlockBasedTableFactory(_tbl_opts));
 
     _key_ttl_compaction_filter_factory = std::make_shared<KeyWithTTLCompactionFilterFactory>();
     _data_cf_opts.compaction_filter_factory = _key_ttl_compaction_filter_factory;

@@ -26,14 +26,19 @@
 
 #include "nfs_client_impl.h"
 
-#include <fcntl.h>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <mutex>
 
-#include <queue>
-
+#include "nfs/nfs_code_definition.h"
+#include "nfs/nfs_node.h"
+#include "perf_counter/perf_counter.h"
+#include "utils/blob.h"
 #include "utils/command_manager.h"
 #include "utils/filesystem.h"
+#include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/string_conv.h"
+#include "utils/token_buckets.h"
 
 namespace dsn {
 namespace service {
@@ -131,6 +136,7 @@ void nfs_client_impl::begin_remote_copy(std::shared_ptr<remote_copy_request> &rc
     req->file_size_req.overwrite = rci->overwrite;
     req->file_size_req.__set_source_disk_tag(rci->source_disk_tag);
     req->file_size_req.__set_dest_disk_tag(rci->dest_disk_tag);
+    req->file_size_req.__set_pid(rci->pid);
     req->nfs_task = nfs_task;
     req->is_finished = false;
 
@@ -287,6 +293,7 @@ void nfs_client_impl::continue_copy()
                 copy_req.overwrite = ureq->file_size_req.overwrite;
                 copy_req.is_last = req->is_last;
                 copy_req.__set_source_disk_tag(ureq->file_size_req.source_disk_tag);
+                copy_req.__set_pid(ureq->file_size_req.pid);
                 req->remote_copy_task =
                     async_nfs_copy(copy_req,
                                    [=](error_code err, copy_response &&resp) {
@@ -451,8 +458,7 @@ void nfs_client_impl::continue_write()
         // double check
         zauto_lock l(fc->user_req->user_req_lock);
         if (!fc->file_holder->file_handle) {
-            fc->file_holder->file_handle =
-                file::open(file_path.c_str(), O_RDWR | O_CREAT | O_BINARY, 0666);
+            fc->file_holder->file_handle = file::open(file_path, file::FileOpenType::kWriteOnly);
         }
     }
 
@@ -461,6 +467,10 @@ void nfs_client_impl::continue_write()
         LOG_ERROR("open file {} failed", file_path);
         handle_completion(fc->user_req, ERR_FILE_OPERATION_FAILED);
     } else {
+        LOG_DEBUG("nfs: copy to file {} [{}, {}]",
+                  file_path,
+                  reqc->response.offset,
+                  reqc->response.offset + reqc->response.size);
         zauto_lock l(reqc->lock);
         if (reqc->is_valid) {
             reqc->local_write_task = file::write(fc->file_holder->file_handle,

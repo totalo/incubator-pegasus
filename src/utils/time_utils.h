@@ -23,12 +23,17 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #pragma once
 
+// IWYU pragma: no_include <bits/types/struct_tm.h>
+#include <stdint.h>
+#include <time.h>
 #include <chrono>
 #include <cstdio>
+#include <string>
 
-#include "string_view.h"
+#include "absl/strings/string_view.h"
 
 namespace dsn {
 namespace utils {
@@ -40,8 +45,9 @@ static struct tm *get_localtime(uint64_t ts_ms, struct tm *tm_buf)
 }
 
 // get time string, which format is yyyy-MM-dd hh:mm:ss.SSS
-// NOTE: using char* as output is usually unsafe. Please use std::string as the output argument
-// as long as it's possible.
+// NOTE: using char* as output is usually unsafe, remember to initialize its memory as zero before
+// calling 'time_ms_to_string'. Please use std::string as the output argument as long as it's
+// possible.
 extern void time_ms_to_string(uint64_t ts_ms, char *str);
 extern void time_ms_to_string(uint64_t ts_ms, std::string &str);
 
@@ -103,7 +109,7 @@ inline int64_t get_unix_sec_today_midnight()
 // `hh:mm` (range in [00:00, 23:59]) to seconds since 00:00:00
 // eg. `01:00` => `3600`
 // Return: -1 when invalid
-inline int hh_mm_to_seconds(dsn::string_view hhmm)
+inline int hh_mm_to_seconds(absl::string_view hhmm)
 {
     int hour = 0, min = 0, sec = -1;
     if (::sscanf(hhmm.data(), "%d:%d", &hour, &min) == 2 && (0 <= hour && hour <= 23) &&
@@ -116,7 +122,7 @@ inline int hh_mm_to_seconds(dsn::string_view hhmm)
 // local time `hh:mm` to unix timestamp.
 // eg. `18:10` => `1525947000` when called on May 10, 2018, CST
 // Return: -1 when invalid
-inline int64_t hh_mm_today_to_unix_sec(string_view hhmm_of_day)
+inline int64_t hh_mm_today_to_unix_sec(absl::string_view hhmm_of_day)
 {
     int sec_of_day = hh_mm_to_seconds(hhmm_of_day);
     if (sec_of_day == -1) {

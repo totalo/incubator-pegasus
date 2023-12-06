@@ -24,19 +24,12 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     a simple version of distributed lock service for development
- *
- * Revision history:
- *     2015-11-04, @imzhenyu (Zhenyu.Guo@microsoft.com), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
+#include <chrono>
 
-#include "runtime/task/async_calls.h"
-
-#include "common/replication_common.h"
+#include "common/replication.codes.h"
 #include "distributed_lock_service_simple.h"
+#include "runtime/api_layer1.h"
+#include "runtime/task/async_calls.h"
 
 namespace dsn {
 namespace dist {

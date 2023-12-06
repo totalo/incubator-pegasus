@@ -24,34 +24,29 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
+#include <stddef.h>
+#include <stdint.h>
 #include <atomic>
-#include "utils/ports.h"
-#include "utils/extensible_object.h"
-#include "utils/blob.h"
-#include "utils/link.h"
-#include "utils/error_code.h"
-#include "utils/threadpool_code.h"
-#include "runtime/task/task_code.h"
+#include <vector>
+
 #include "common/gpid.h"
 #include "rpc_address.h"
-#include "runtime/global_config.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_spec.h"
+#include "utils/autoref_ptr.h"
+#include "utils/blob.h"
+#include "utils/error_code.h"
+#include "utils/extensible_object.h"
+#include "utils/link.h"
 
 #define DSN_MAX_TASK_CODE_NAME_LENGTH 48
 #define DSN_MAX_ERROR_CODE_NAME_LENGTH 48
 
 namespace dsn {
 class rpc_session;
+
 typedef dsn::ref_ptr<rpc_session> rpc_session_ptr;
 
 struct fast_code

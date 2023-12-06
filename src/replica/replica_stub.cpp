@@ -24,52 +24,73 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     replica container - replica stub
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
-#include "replica.h"
-#include "replica_stub.h"
-#include "mutation_log.h"
-#include "mutation.h"
-#include "bulk_load/replica_bulk_loader.h"
-#include "duplication/duplication_sync_timer.h"
-#include "backup/replica_backup_server.h"
-#include "split/replica_split_manager.h"
-#include "replica_disk_migrator.h"
-#include "disk_cleaner.h"
-
 #include <boost/algorithm/string/replace.hpp>
-#include "common/json_helper.h"
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <fmt/core.h>
+#include <fmt/format.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <deque>
+#include <limits>
+#include <mutex>
+#include <ostream>
+#include <set>
+#include <vector>
+
+#include "absl/strings/string_view.h"
+#include "backup/replica_backup_server.h"
+#include "bulk_load/replica_bulk_loader.h"
+#include "common/backup_common.h"
+#include "common/duplication_common.h"
+#include "common/replication.codes.h"
+#include "common/replication_enums.h"
+#include "disk_cleaner.h"
+#include "duplication/duplication_sync_timer.h"
+#include "meta_admin_types.h"
+#include "mutation.h"
+#include "mutation_log.h"
+#include "nfs/nfs_node.h"
+#include "nfs_types.h"
+#include "perf_counter/perf_counter.h"
+#include "replica.h"
+#include "replica/duplication/replica_follower.h"
+#include "replica/log_file.h"
+#include "replica/replica_context.h"
+#include "replica/replica_stub.h"
+#include "replica/replication_app_base.h"
+#include "replica_disk_migrator.h"
+#include "replica_stub.h"
+#include "runtime/api_layer1.h"
+#include "runtime/ranger/access_type.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/security/access_controller.h"
+#include "runtime/task/async_calls.h"
+#include "split/replica_split_manager.h"
+#include "utils/command_manager.h"
 #include "utils/filesystem.h"
+#include "utils/fmt_logging.h"
+#include "utils/ports.h"
+#include "utils/process_utils.h"
 #include "utils/rand.h"
 #include "utils/string_conv.h"
-#include "utils/command_manager.h"
-#include "replica/replication_app_base.h"
-#include "utils/enum_helper.h"
-#include <vector>
-#include <deque>
-#include "utils/fmt_logging.h"
+#include "utils/strings.h"
+#include "utils/synchronize.h"
 #ifdef DSN_ENABLE_GPERF
 #include <gperftools/malloc_extension.h>
 #elif defined(DSN_USE_JEMALLOC)
 #include "utils/je_ctl.h"
 #endif
-#include "utils/fail_point.h"
+#include "nfs/nfs_code_definition.h"
 #include "remote_cmd/remote_command.h"
+#include "utils/fail_point.h"
 
 namespace dsn {
 namespace replication {
-
-DSN_DEFINE_bool(replication,
-                ignore_broken_disk,
-                true,
-                "true means ignore broken data disk when initialize");
 DSN_DEFINE_bool(replication,
                 deny_client_on_start,
                 false,
@@ -103,6 +124,14 @@ DSN_DEFINE_bool(replication,
                 verbose_commit_log_on_start,
                 false,
                 "whether to print verbose log when commit mutation when starting the server");
+DSN_DEFINE_bool(
+    replication,
+    crash_on_slog_error,
+    false,
+    "whether to exit the process while fail to open slog. If true, the process will exit and leave "
+    "the corrupted slog and replicas to be handled by the administrator. If false, the process "
+    "will continue, and remove the slog and move all the replicas to corresponding error "
+    "directories");
 DSN_DEFINE_uint32(replication,
                   max_concurrent_manual_emergency_checkpointing_count,
                   10,
@@ -131,7 +160,13 @@ DSN_DEFINE_int32(replication,
                  32,
                  "shared log maximum segment file size (MB)");
 
-DSN_DEFINE_int32(replication, log_shared_file_count_limit, 100, "shared log maximum file count");
+DSN_DEFINE_uint64(
+    replication,
+    log_shared_gc_flush_replicas_limit,
+    64,
+    "The number of submitted replicas that are flushed for gc shared logs; 0 means no limit");
+DSN_TAG_VARIABLE(log_shared_gc_flush_replicas_limit, FT_MUTABLE);
+
 DSN_DEFINE_int32(
     replication,
     mem_release_check_interval_ms,
@@ -156,6 +191,9 @@ bool replica_stub::s_not_exit_on_log_failure = false;
 replica_stub::replica_stub(replica_state_subscriber subscriber /*= nullptr*/,
                            bool is_long_subscriber /* = true*/)
     : serverlet("replica_stub"),
+      _last_prevent_gc_replica_count(0),
+      _real_log_shared_gc_flush_replicas_limit(0),
+      _mock_flush_replicas_for_test(0),
       _deny_client(false),
       _verbose_client_log(false),
       _verbose_commit_log(false),
@@ -163,7 +201,6 @@ replica_stub::replica_stub(replica_state_subscriber subscriber /*= nullptr*/,
       _mem_release_max_reserved_mem_percentage(10),
       _max_concurrent_bulk_load_downloading_count(5),
       _learn_app_concurrent_count(0),
-      _fs_manager(false),
       _bulk_load_downloading_count(0),
       _manual_emergency_checkpointing_count(0),
       _is_running(false)
@@ -533,6 +570,7 @@ void replica_stub::initialize(bool clear /* = false*/)
     replication_options opts;
     opts.initialize();
     initialize(opts, clear);
+    _access_controller = std::make_unique<dsn::security::access_controller>();
 }
 
 void replica_stub::initialize(const replication_options &opts, bool clear /* = false*/)
@@ -542,13 +580,7 @@ void replica_stub::initialize(const replication_options &opts, bool clear /* = f
     LOG_INFO("primary_address = {}", _primary_address_str);
 
     set_options(opts);
-    std::ostringstream oss;
-    for (int i = 0; i < _options.meta_servers.size(); ++i) {
-        if (i != 0)
-            oss << ",";
-        oss << _options.meta_servers[i].to_string();
-    }
-    LOG_INFO("meta_servers = {}", oss.str());
+    LOG_INFO("meta_servers = {}", fmt::join(_options.meta_servers, ", "));
 
     _deny_client = FLAGS_deny_client_on_start;
     _verbose_client_log = FLAGS_verbose_client_log_on_start;
@@ -568,50 +600,60 @@ void replica_stub::initialize(const replication_options &opts, bool clear /* = f
         }
     }
 
-    // init dirs
+    // Initialize the file system manager.
+    _fs_manager.initialize(_options.data_dirs, _options.data_dir_tags);
+
+    // TODO(yingchun): remove the slog related code.
+    // Create slog directory if it does not exist.
     std::string cdir;
     std::string err_msg;
-    CHECK(
-        dsn::utils::filesystem::create_directory(_options.slog_dir, cdir, err_msg), "{}", err_msg);
+    CHECK(utils::filesystem::create_directory(_options.slog_dir, cdir, err_msg), err_msg);
     _options.slog_dir = cdir;
-    initialize_fs_manager(_options.data_dirs, _options.data_dir_tags);
 
+    // Initialize slog.
     _log = new mutation_log_shared(_options.slog_dir,
                                    FLAGS_log_shared_file_size_mb,
                                    FLAGS_log_shared_force_flush,
                                    &_counter_shared_log_recent_write_size);
     LOG_INFO("slog_dir = {}", _options.slog_dir);
 
-    // init rps
+    // Start to load replicas in available data directories.
     LOG_INFO("start to load replicas");
-
-    std::vector<std::string> dir_list;
-    for (auto &dir : _fs_manager.get_available_data_dirs()) {
-        std::vector<std::string> tmp_list;
-        CHECK(dsn::utils::filesystem::get_subdirectories(dir, tmp_list, false),
-              "Fail to get subdirectories in {}.",
-              dir);
-        dir_list.insert(dir_list.end(), tmp_list.begin(), tmp_list.end());
+    std::map<dir_node *, std::vector<std::string>> dirs_by_dn;
+    for (const auto &dn : _fs_manager.get_dir_nodes()) {
+        // Skip IO error dir_node.
+        if (dsn_unlikely(dn->status == disk_status::IO_ERROR)) {
+            continue;
+        }
+        std::vector<std::string> sub_directories;
+        CHECK(dsn::utils::filesystem::get_subdirectories(dn->full_dir, sub_directories, false),
+              "fail to get sub_directories in {}",
+              dn->full_dir);
+        dirs_by_dn.emplace(dn.get(), sub_directories);
     }
 
     replicas rps;
     utils::ex_lock rps_lock;
     std::deque<task_ptr> load_tasks;
     uint64_t start_time = dsn_now_ms();
-    for (auto &dir : dir_list) {
-        if (dsn::replication::is_data_dir_invalid(dir)) {
-            LOG_INFO("ignore dir {}", dir);
-            continue;
-        }
+    for (const auto &dn_dirs : dirs_by_dn) {
+        const auto dn = dn_dirs.first;
+        for (const auto &dir : dn_dirs.second) {
+            if (dsn::replication::is_data_dir_invalid(dir)) {
+                LOG_WARNING("ignore dir {}", dir);
+                continue;
+            }
 
-        load_tasks.push_back(
-            tasking::create_task(LPC_REPLICATION_INIT_LOAD,
-                                 &_tracker,
-                                 [this, dir, &rps, &rps_lock] {
-                                     LOG_INFO("process dir {}", dir);
+            load_tasks.push_back(
+                tasking::create_task(LPC_REPLICATION_INIT_LOAD,
+                                     &_tracker,
+                                     [this, dn, dir, &rps, &rps_lock] {
+                                         LOG_INFO("process dir {}", dir);
 
-                                     auto r = replica::load(this, dir.c_str());
-                                     if (r != nullptr) {
+                                         auto r = load_replica(dn, dir.c_str());
+                                         if (r == nullptr) {
+                                             return;
+                                         }
                                          LOG_INFO("{}@{}: load replica '{}' success, <durable, "
                                                   "commit> = <{}, {}>, last_prepared_decree = {}",
                                                   r->get_gpid(),
@@ -628,17 +670,17 @@ void replica_stub::initialize(const replication_options &opts, bool clear /* = f
                                                rps[r->get_gpid()]->dir());
 
                                          rps[r->get_gpid()] = r;
-                                     }
-                                 },
-                                 load_tasks.size()));
-        load_tasks.back()->enqueue();
+                                     },
+                                     load_tasks.size()));
+            load_tasks.back()->enqueue();
+        }
     }
     for (auto &tsk : load_tasks) {
         tsk->wait();
     }
     uint64_t finish_time = dsn_now_ms();
 
-    dir_list.clear();
+    dirs_by_dn.clear();
     load_tasks.clear();
     LOG_INFO("load replicas succeed, replica_count = {}, time_used = {} ms",
              rps.size(),
@@ -669,6 +711,9 @@ void replica_stub::initialize(const replication_options &opts, bool clear /* = f
     if (err == ERR_OK) {
         LOG_INFO("replay shared log succeed, time_used = {} ms", finish_time - start_time);
     } else {
+        if (FLAGS_crash_on_slog_error) {
+            LOG_FATAL("replay shared log failed, err = {}, please check the error details", err);
+        }
         LOG_ERROR("replay shared log failed, err = {}, time_used = {} ms, clear all logs ...",
                   err,
                   finish_time - start_time);
@@ -682,17 +727,7 @@ void replica_stub::initialize(const replication_options &opts, bool clear /* = f
         // TODO: checkpoint latest state and update on meta server so learning is cheaper
         for (auto it = rps.begin(); it != rps.end(); ++it) {
             it->second->close();
-            // move to '.err' directory
-            const char *dir = it->second->dir().c_str();
-            char rename_dir[1024];
-            sprintf(rename_dir, "%s.%" PRIu64 ".err", dir, dsn_now_us());
-            CHECK(dsn::utils::filesystem::rename_path(dir, rename_dir),
-                  "init_replica: failed to move directory '{}' to '{}'",
-                  dir,
-                  rename_dir);
-            LOG_WARNING("init_replica: replica_dir_op succeed to move directory '{}' to '{}'",
-                        dir,
-                        rename_dir);
+            move_to_err_path(it->second->dir(), "initialize replica");
             _counter_replicas_recent_replica_move_error_count->increment();
         }
         rps.clear();
@@ -805,38 +840,6 @@ void replica_stub::initialize(const replication_options &opts, bool clear /* = f
     }
 }
 
-void replica_stub::initialize_fs_manager(std::vector<std::string> &data_dirs,
-                                         std::vector<std::string> &data_dir_tags)
-{
-    std::string cdir;
-    std::string err_msg;
-    int count = 0;
-    std::vector<std::string> available_dirs;
-    std::vector<std::string> available_dir_tags;
-    for (auto i = 0; i < data_dir_tags.size(); ++i) {
-        std::string &dir = data_dirs[i];
-        if (dsn_unlikely(!utils::filesystem::create_directory(dir, cdir, err_msg) ||
-                         !utils::filesystem::check_dir_rw(dir, err_msg))) {
-            if (FLAGS_ignore_broken_disk) {
-                LOG_WARNING("data dir[{}] is broken, ignore it, error:{}", dir, err_msg);
-            } else {
-                CHECK(false, "{}", err_msg);
-            }
-            continue;
-        }
-        LOG_INFO("data_dirs[{}] = {}", count, cdir);
-        available_dirs.emplace_back(cdir);
-        available_dir_tags.emplace_back(data_dir_tags[i]);
-        count++;
-    }
-
-    CHECK_GT_MSG(
-        available_dirs.size(), 0, "initialize fs manager failed, no available data directory");
-    CHECK_EQ_MSG(_fs_manager.initialize(available_dirs, available_dir_tags, false),
-                 dsn::ERR_OK,
-                 "initialize fs manager failed");
-}
-
 void replica_stub::initialize_start()
 {
     if (_is_running) {
@@ -868,11 +871,11 @@ void replica_stub::initialize_start()
 #endif
 
     if (FLAGS_duplication_enabled) {
-        _duplication_sync_timer = dsn::make_unique<duplication_sync_timer>(this);
+        _duplication_sync_timer = std::make_unique<duplication_sync_timer>(this);
         _duplication_sync_timer->start();
     }
 
-    _backup_server = dsn::make_unique<replica_backup_server>(this);
+    _backup_server = std::make_unique<replica_backup_server>(this);
 
     // init liveness monitor
     CHECK_EQ(NS_Disconnected, _state);
@@ -1101,40 +1104,17 @@ void replica_stub::on_query_disk_info(query_disk_info_rpc rpc)
     int app_id = 0;
     if (!req.app_name.empty()) {
         zauto_read_lock l(_replicas_lock);
-        if (!(app_id = get_app_id_from_replicas(req.app_name))) {
+        app_id = get_app_id_from_replicas(req.app_name);
+        if (app_id == 0) {
             resp.err = ERR_OBJECT_NOT_FOUND;
             return;
         }
     }
 
-    for (const auto &dir_node : _fs_manager._dir_nodes) {
-        disk_info info;
-        // app_name empty means query all app replica_count
-        if (req.app_name.empty()) {
-            info.holding_primary_replicas = dir_node->holding_primary_replicas;
-            info.holding_secondary_replicas = dir_node->holding_secondary_replicas;
-        } else {
-            const auto &primary_iter = dir_node->holding_primary_replicas.find(app_id);
-            if (primary_iter != dir_node->holding_primary_replicas.end()) {
-                info.holding_primary_replicas[app_id] = primary_iter->second;
-            }
-
-            const auto &secondary_iter = dir_node->holding_secondary_replicas.find(app_id);
-            if (secondary_iter != dir_node->holding_secondary_replicas.end()) {
-                info.holding_secondary_replicas[app_id] = secondary_iter->second;
-            }
-        }
-        info.tag = dir_node->tag;
-        info.full_dir = dir_node->full_dir;
-        info.disk_capacity_mb = dir_node->disk_capacity_mb;
-        info.disk_available_mb = dir_node->disk_available_mb;
-
-        resp.disk_infos.emplace_back(info);
-    }
-
-    resp.total_capacity_mb = _fs_manager._total_capacity_mb;
-    resp.total_available_mb = _fs_manager._total_available_mb;
-
+    resp.disk_infos = _fs_manager.get_disk_infos(app_id);
+    // Get the statistics from fs_manager's metrics, they are thread-safe.
+    resp.total_capacity_mb = _fs_manager._counter_total_capacity_mb->get_integer_value();
+    resp.total_available_mb = _fs_manager._counter_total_available_mb->get_integer_value();
     resp.err = ERR_OK;
 }
 
@@ -1195,7 +1175,7 @@ void replica_stub::on_add_new_disk(add_new_disk_rpc rpc)
 
     std::vector<std::string> data_dirs;
     std::vector<std::string> data_dir_tags;
-    std::string err_msg = "";
+    std::string err_msg;
     if (disk_str.empty() ||
         !replication_options::get_data_dir_and_tag(
             disk_str, "", "replica", data_dirs, data_dir_tags, err_msg)) {
@@ -1205,11 +1185,12 @@ void replica_stub::on_add_new_disk(add_new_disk_rpc rpc)
     }
 
     for (auto i = 0; i < data_dir_tags.size(); ++i) {
+        // TODO(yingchun): move the following code to fs_manager.
         auto dir = data_dirs[i];
-        if (_fs_manager.is_dir_node_available(dir, data_dir_tags[i])) {
+        if (_fs_manager.is_dir_node_exist(dir, data_dir_tags[i])) {
             resp.err = ERR_NODE_ALREADY_EXIST;
             resp.__set_err_hint(
-                fmt::format("data_dir({}) tag({}) already available", dir, data_dir_tags[i]));
+                fmt::format("data_dir({}) tag({}) already exist", dir, data_dir_tags[i]));
             return;
         }
 
@@ -1229,7 +1210,26 @@ void replica_stub::on_add_new_disk(add_new_disk_rpc rpc)
         }
 
         LOG_INFO("Add a new disk in fs_manager, data_dir={}, tag={}", cdir, data_dir_tags[i]);
+        // TODO(yingchun): there is a gap between _fs_manager.is_dir_node_exist() and
+        // _fs_manager.add_new_dir_node() which is not atomic.
         _fs_manager.add_new_dir_node(cdir, data_dir_tags[i]);
+    }
+}
+
+void replica_stub::on_nfs_copy(const ::dsn::service::copy_request &request,
+                               ::dsn::rpc_replier<::dsn::service::copy_response> &reply)
+{
+    if (check_status_and_authz_with_reply(request, reply, ranger::access_type::kWrite)) {
+        _nfs->on_copy(request, reply);
+    }
+}
+
+void replica_stub::on_nfs_get_file_size(
+    const ::dsn::service::get_file_size_request &request,
+    ::dsn::rpc_replier<::dsn::service::get_file_size_response> &reply)
+{
+    if (check_status_and_authz_with_reply(request, reply, ranger::access_type::kWrite)) {
+        _nfs->on_get_file_size(request, reply);
     }
 }
 
@@ -1287,14 +1287,19 @@ void replica_stub::on_group_check(group_check_rpc rpc)
 
 void replica_stub::on_learn(dsn::message_ex *msg)
 {
+    learn_response response;
     learn_request request;
     ::dsn::unmarshall(msg, request);
 
     replica_ptr rep = get_replica(request.pid);
     if (rep != nullptr) {
+        if (!rep->access_controller_allowed(msg, ranger::access_type::kWrite)) {
+            response.err = ERR_ACL_DENY;
+            reply(msg, response);
+            return;
+        }
         rep->on_learn(msg, request);
     } else {
-        learn_response response;
         response.err = ERR_OBJECT_NOT_FOUND;
         reply(msg, response);
     }
@@ -1324,7 +1329,7 @@ void replica_stub::on_add_learner(const group_check_request &request)
         return;
     }
 
-    LOG_INFO("{}@{}: received add learner, primary = {}, ballot ={}, status = {}, "
+    LOG_INFO("{}@{}: received add learner, primary = {}, ballot = {}, status = {}, "
              "last_committed_decree = {}",
              request.config.pid,
              _primary_address_str,
@@ -1360,12 +1365,7 @@ void replica_stub::get_replica_info(replica_info &info, replica_ptr r)
     info.last_committed_decree = r->last_committed_decree();
     info.last_prepared_decree = r->last_prepared_decree();
     info.last_durable_decree = r->last_durable_decree();
-
-    dsn::error_code err = _fs_manager.get_disk_tag(r->dir(), info.disk_tag);
-    if (dsn::ERR_OK != err) {
-        LOG_WARNING("get disk tag of {} failed: {}", r->dir(), err);
-    }
-
+    info.disk_tag = r->get_dir_node()->tag;
     info.__set_manual_compact_status(r->get_manual_compact_status());
 }
 
@@ -1608,6 +1608,10 @@ void replica_stub::on_node_query_reply_scatter2(replica_stub_ptr this_, gpid id)
 void replica_stub::remove_replica_on_meta_server(const app_info &info,
                                                  const partition_configuration &config)
 {
+    if (FLAGS_fd_disabled) {
+        return;
+    }
+
     dsn::message_ex *msg = dsn::message_ex::create_request(RPC_CM_UPDATE_PARTITION_CONFIGURATION);
 
     std::shared_ptr<configuration_update_request> request(new configuration_update_request);
@@ -1719,9 +1723,7 @@ void replica_stub::init_gc_for_test()
 
 void replica_stub::on_gc_replica(replica_stub_ptr this_, gpid id)
 {
-    std::string replica_path;
     std::pair<app_info, replica_info> closed_info;
-
     {
         zauto_write_lock l(_replicas_lock);
         auto iter = _closed_replicas.find(id);
@@ -1729,26 +1731,30 @@ void replica_stub::on_gc_replica(replica_stub_ptr this_, gpid id)
             return;
         closed_info = iter->second;
         _closed_replicas.erase(iter);
-        _fs_manager.remove_replica(id);
     }
+    _fs_manager.remove_replica(id);
 
-    replica_path = get_replica_dir(closed_info.first.app_type.c_str(), id, false);
-    if (replica_path.empty()) {
+    const auto *const dn = _fs_manager.find_replica_dir(closed_info.first.app_type, id);
+    if (dn == nullptr) {
         LOG_WARNING(
             "gc closed replica({}.{}) failed, no exist data", id, closed_info.first.app_type);
         return;
     }
 
+    const auto replica_path = dn->replica_dir(closed_info.first.app_type, id);
+    CHECK(
+        dsn::utils::filesystem::directory_exists(replica_path), "dir({}) not exist", replica_path);
     LOG_INFO("start to move replica({}) as garbage, path: {}", id, replica_path);
-    char rename_path[1024];
-    sprintf(rename_path, "%s.%" PRIu64 ".gar", replica_path.c_str(), dsn_now_us());
+    const auto rename_path = fmt::format("{}.{}{}", replica_path, dsn_now_us(), kFolderSuffixGar);
     if (!dsn::utils::filesystem::rename_path(replica_path, rename_path)) {
         LOG_WARNING("gc_replica: failed to move directory '{}' to '{}'", replica_path, rename_path);
 
         // if gc the replica failed, add it back
-        zauto_write_lock l(_replicas_lock);
+        {
+            zauto_write_lock l(_replicas_lock);
+            _closed_replicas.emplace(id, closed_info);
+        }
         _fs_manager.add_replica(id, replica_path);
-        _closed_replicas.emplace(id, closed_info);
     } else {
         LOG_WARNING("gc_replica: replica_dir_op succeed to move directory '{}' to '{}'",
                     replica_path,
@@ -1757,138 +1763,202 @@ void replica_stub::on_gc_replica(replica_stub_ptr this_, gpid id)
     }
 }
 
+void replica_stub::gc_slog(const replica_gc_info_map &replica_gc_map)
+{
+    if (_log == nullptr) {
+        return;
+    }
+
+    replica_log_info_map replica_durable_decrees;
+    for (auto &replica_gc : replica_gc_map) {
+        replica_log_info replica_log;
+        auto &rep = replica_gc.second.rep;
+        auto &plog = replica_gc.second.plog;
+        if (plog) {
+            // Flush private log to update `plog_max_commit_on_disk`, and just flush once
+            // to avoid flushing infinitely.
+            plog->flush_once();
+            auto plog_max_commit_on_disk = plog->max_commit_on_disk();
+
+            replica_log.max_decree =
+                std::min(replica_gc.second.last_durable_decree, plog_max_commit_on_disk);
+            LOG_INFO("gc_shared: gc condition for {}, status = {}, garbage_max_decree = {}, "
+                     "last_durable_decree= {}, plog_max_commit_on_disk = {}",
+                     rep->name(),
+                     enum_to_string(replica_gc.second.status),
+                     replica_log.max_decree,
+                     replica_gc.second.last_durable_decree,
+                     plog_max_commit_on_disk);
+        } else {
+            replica_log.max_decree = replica_gc.second.last_durable_decree;
+            LOG_INFO("gc_shared: gc condition for {}, status = {}, garbage_max_decree = {}, "
+                     "last_durable_decree = {}",
+                     rep->name(),
+                     enum_to_string(replica_gc.second.status),
+                     replica_log.max_decree,
+                     replica_gc.second.last_durable_decree);
+        }
+        replica_log.valid_start_offset = replica_gc.second.init_offset_in_shared_log;
+        replica_durable_decrees[replica_gc.first] = replica_log;
+    }
+
+    // Garbage collection for shared log files.
+    std::set<gpid> prevent_gc_replicas;
+    _log->garbage_collection(replica_durable_decrees, prevent_gc_replicas);
+
+    // Trigger checkpoint to flush memtables once some replicas were found that prevent
+    // slog files from being removed for gc.
+    flush_replicas_for_slog_gc(replica_gc_map, prevent_gc_replicas);
+
+    auto total_size = _log->total_size();
+    _counter_shared_log_size->set(total_size / (1024 * 1024));
+
+    // TODO(wangdan): currently we could not yet call _log.reset() as below to close slog and
+    // reset it to nullptr even if it was found that slog had become empty (which means there
+    // had not been any file for slog).
+    // if (total_size == 0) {
+    //     _log.reset();
+    // }
+    //
+    // The reason for this point is that on_gc() is scheduled by timer to run asynchronously
+    // during the initialization of replica_stub. It might happen before slog.on_partition_reset()
+    // (building slog._shared_log_info_map), which means slog would be closed mistakenly before
+    // it was initialized completely.
+    //
+    // All of slog files would removed on v2.5; thus it is safe to remove all of slog code (which
+    // means even slog object would not be created) on the next version (namely 2.6), and this
+    // problem would also be resolved.
+}
+
+void replica_stub::limit_flush_replicas_for_slog_gc(size_t prevent_gc_replica_count)
+{
+    const size_t log_shared_gc_flush_replicas_limit = FLAGS_log_shared_gc_flush_replicas_limit;
+    if (log_shared_gc_flush_replicas_limit == 0) {
+        // 0 for log_shared_gc_flush_replicas_limit means no limit.
+        _real_log_shared_gc_flush_replicas_limit = std::numeric_limits<size_t>::max();
+        return;
+    }
+
+    if (_last_prevent_gc_replica_count == 0) {
+        // Initialize it for the 1st time.
+        _real_log_shared_gc_flush_replicas_limit = log_shared_gc_flush_replicas_limit;
+        return;
+    }
+
+    CHECK_GE(_last_prevent_gc_replica_count, prevent_gc_replica_count);
+    size_t flushed_replicas = _last_prevent_gc_replica_count - prevent_gc_replica_count;
+    if (flushed_replicas == 0) {
+        // It's too busy to process more flush tasks.
+        _real_log_shared_gc_flush_replicas_limit =
+            std::min(2UL, log_shared_gc_flush_replicas_limit);
+        return;
+    }
+
+    if (_real_log_shared_gc_flush_replicas_limit == 0 ||
+        _real_log_shared_gc_flush_replicas_limit == std::numeric_limits<size_t>::max()) {
+        // Once it was previously set with some special values, it should be reset.
+        _real_log_shared_gc_flush_replicas_limit = log_shared_gc_flush_replicas_limit;
+        return;
+    }
+
+    if (flushed_replicas < _real_log_shared_gc_flush_replicas_limit) {
+        // Keep it unchanged.
+        return;
+    }
+
+    // Increase it to process more flush tasks.
+    _real_log_shared_gc_flush_replicas_limit =
+        std::min(log_shared_gc_flush_replicas_limit, _real_log_shared_gc_flush_replicas_limit << 1);
+}
+
+void replica_stub::flush_replicas_for_slog_gc(const replica_gc_info_map &replica_gc_map,
+                                              const std::set<gpid> &prevent_gc_replicas)
+{
+    // Trigger checkpoints to flush memtables once some replicas were found that prevent slog files
+    // from being removed for gc.
+    //
+    // How to trigger memtable flush ?
+    //   A parameter `is_emergency' was added for `replica::background_async_checkpoint()` function;
+    //   once it's set true, underlying storage engine would flush memtable as soon as possiable.
+    //
+    // When memtable flush is triggered ?
+    //   1. After a fixed interval (specified by `[replication].gc_interval_ms` option), try to find
+    //   if there are some replicas preventing slog files from being removed for gc; if any, all of
+    //   them would be deleted "gradually" ("gradually" means the number of the replicas whose
+    //   memtables are submitted to storage engine to be flushed would be limited).
+    //   2. `[replication].checkpoint_max_interval_hours' option specified the max interval between
+    //   the two adjacent checkpoints.
+
+    if (prevent_gc_replicas.empty()) {
+        return;
+    }
+
+    limit_flush_replicas_for_slog_gc(prevent_gc_replicas.size());
+    _last_prevent_gc_replica_count = prevent_gc_replicas.size();
+
+    LOG_INFO("gc_shared: trigger emergency checkpoints to flush replicas for gc shared logs: "
+             "log_shared_gc_flush_replicas_limit = {}/{}, prevent_gc_replicas({}) = {}",
+             _real_log_shared_gc_flush_replicas_limit,
+             FLAGS_log_shared_gc_flush_replicas_limit,
+             prevent_gc_replicas.size(),
+             fmt::join(prevent_gc_replicas, ", "));
+
+    size_t i = 0;
+    for (const auto &pid : prevent_gc_replicas) {
+        const auto &replica_gc = replica_gc_map.find(pid);
+        if (replica_gc == replica_gc_map.end()) {
+            continue;
+        }
+
+        if (++i > _real_log_shared_gc_flush_replicas_limit) {
+            break;
+        }
+
+        bool mock_flush = false;
+        FAIL_POINT_INJECT_NOT_RETURN_F(
+            "mock_flush_replicas_for_slog_gc", [&mock_flush, this, i](absl::string_view str) {
+                CHECK(buf2bool(str, mock_flush),
+                      "invalid mock_flush_replicas_for_slog_gc toggle, should be true or false: {}",
+                      str);
+                _mock_flush_replicas_for_test = i;
+            });
+        if (dsn_unlikely(mock_flush)) {
+            continue;
+        }
+
+        tasking::enqueue(
+            LPC_PER_REPLICA_CHECKPOINT_TIMER,
+            replica_gc->second.rep->tracker(),
+            std::bind(&replica_stub::trigger_checkpoint, this, replica_gc->second.rep, true),
+            pid.thread_hash(),
+            std::chrono::milliseconds(rand::next_u32(0, FLAGS_gc_interval_ms / 2)));
+    }
+}
+
 void replica_stub::on_gc()
 {
     uint64_t start = dsn_now_ns();
 
-    struct gc_info
-    {
-        replica_ptr rep;
-        partition_status::type status;
-        mutation_log_ptr plog;
-        decree last_durable_decree;
-        int64_t init_offset_in_shared_log;
-    };
-
-    std::unordered_map<gpid, gc_info> rs;
+    replica_gc_info_map replica_gc_map;
     {
         zauto_read_lock l(_replicas_lock);
-        // collect info in lock to prevent the case that the replica is closed in replica::close()
-        for (auto &kv : _replicas) {
-            const replica_ptr &rep = kv.second;
-            gc_info &info = rs[kv.first];
-            info.rep = rep;
-            info.status = rep->status();
-            info.plog = rep->private_log();
-            info.last_durable_decree = rep->last_durable_decree();
-            info.init_offset_in_shared_log = rep->get_app()->init_info().init_offset_in_shared_log;
+        // A replica was removed from _replicas before it would be closed by replica::close().
+        // Thus it's safe to use the replica after fetching its ref pointer from _replicas.
+        for (const auto &rep_pair : _replicas) {
+            const replica_ptr &rep = rep_pair.second;
+
+            auto &replica_gc = replica_gc_map[rep_pair.first];
+            replica_gc.rep = rep;
+            replica_gc.status = rep->status();
+            replica_gc.plog = rep->private_log();
+            replica_gc.last_durable_decree = rep->last_durable_decree();
+            replica_gc.init_offset_in_shared_log =
+                rep->get_app()->init_info().init_offset_in_shared_log;
         }
     }
 
-    LOG_INFO("start to garbage collection, replica_count = {}", rs.size());
-
-    // gc shared prepare log
-    //
-    // Now that checkpoint is very important for gc, we must be able to trigger checkpoint when
-    // necessary.
-    // that is, we should be able to trigger memtable flush when necessary.
-    //
-    // How to trigger memtable flush?
-    //   we add a parameter `is_emergency' in dsn_app_async_checkpoint() function, when set true,
-    //   the undering storage system should flush memtable as soon as possiable.
-    //
-    // When to trigger memtable flush?
-    //   1. Using `[replication].checkpoint_max_interval_hours' option, we can set max interval time
-    //   of two adjacent checkpoints; If the time interval is arrived, then emergency checkpoint
-    //   will be triggered.
-    //   2. Using `[replication].log_shared_file_count_limit' option, we can set max file count of
-    //   shared log; If the limit is exceeded, then emergency checkpoint will be triggered; Instead
-    //   of triggering all replicas to do checkpoint, we will only trigger a few of necessary
-    //   replicas which block garbage collection of the oldest log file.
-    //
-    if (_log != nullptr) {
-        replica_log_info_map gc_condition;
-        for (auto &kv : rs) {
-            replica_log_info ri;
-            replica_ptr &rep = kv.second.rep;
-            mutation_log_ptr &plog = kv.second.plog;
-            if (plog) {
-                // flush private log to update plog_max_commit_on_disk,
-                // and just flush once to avoid flushing infinitely
-                plog->flush_once();
-
-                decree plog_max_commit_on_disk = plog->max_commit_on_disk();
-                ri.max_decree = std::min(kv.second.last_durable_decree, plog_max_commit_on_disk);
-                LOG_INFO("gc_shared: gc condition for {}, status = {}, garbage_max_decree = {}, "
-                         "last_durable_decree= {}, plog_max_commit_on_disk = {}",
-                         rep->name(),
-                         enum_to_string(kv.second.status),
-                         ri.max_decree,
-                         kv.second.last_durable_decree,
-                         plog_max_commit_on_disk);
-            } else {
-                ri.max_decree = kv.second.last_durable_decree;
-                LOG_INFO("gc_shared: gc condition for {}, status = {}, garbage_max_decree = {}, "
-                         "last_durable_decree = {}",
-                         rep->name(),
-                         enum_to_string(kv.second.status),
-                         ri.max_decree,
-                         kv.second.last_durable_decree);
-            }
-            ri.valid_start_offset = kv.second.init_offset_in_shared_log;
-            gc_condition[kv.first] = ri;
-        }
-
-        std::set<gpid> prevent_gc_replicas;
-        int reserved_log_count = _log->garbage_collection(
-            gc_condition, FLAGS_log_shared_file_count_limit, prevent_gc_replicas);
-        if (reserved_log_count > FLAGS_log_shared_file_count_limit * 2) {
-            LOG_INFO(
-                "gc_shared: trigger emergency checkpoint by FLAGS_log_shared_file_count_limit, "
-                "file_count_limit = {}, reserved_log_count = {}, trigger all replicas to do "
-                "checkpoint",
-                FLAGS_log_shared_file_count_limit,
-                reserved_log_count);
-            for (auto &kv : rs) {
-                tasking::enqueue(
-                    LPC_PER_REPLICA_CHECKPOINT_TIMER,
-                    kv.second.rep->tracker(),
-                    std::bind(&replica_stub::trigger_checkpoint, this, kv.second.rep, true),
-                    kv.first.thread_hash(),
-                    std::chrono::milliseconds(rand::next_u32(0, FLAGS_gc_interval_ms / 2)));
-            }
-        } else if (reserved_log_count > FLAGS_log_shared_file_count_limit) {
-            std::ostringstream oss;
-            int c = 0;
-            for (auto &i : prevent_gc_replicas) {
-                if (c != 0)
-                    oss << ", ";
-                oss << i.to_string();
-                c++;
-            }
-            LOG_INFO(
-                "gc_shared: trigger emergency checkpoint by FLAGS_log_shared_file_count_limit, "
-                "file_count_limit = {}, reserved_log_count = {}, prevent_gc_replica_count = "
-                "{}, trigger them to do checkpoint: {}",
-                FLAGS_log_shared_file_count_limit,
-                reserved_log_count,
-                prevent_gc_replicas.size(),
-                oss.str());
-            for (auto &id : prevent_gc_replicas) {
-                auto find = rs.find(id);
-                if (find != rs.end()) {
-                    tasking::enqueue(
-                        LPC_PER_REPLICA_CHECKPOINT_TIMER,
-                        find->second.rep->tracker(),
-                        std::bind(&replica_stub::trigger_checkpoint, this, find->second.rep, true),
-                        id.thread_hash(),
-                        std::chrono::milliseconds(rand::next_u32(0, FLAGS_gc_interval_ms / 2)));
-                }
-            }
-        }
-
-        _counter_shared_log_size->set(_log->total_size() / (1024 * 1024));
-    }
+    LOG_INFO("start to garbage collection, replica_count = {}", replica_gc_map.size());
+    gc_slog(replica_gc_map);
 
     // statistic learning info
     uint64_t learning_count = 0;
@@ -1904,7 +1974,7 @@ void replica_stub::on_gc()
     uint64_t splitting_max_duration_time_ms = 0;
     uint64_t splitting_max_async_learn_time_ms = 0;
     uint64_t splitting_max_copy_file_size = 0;
-    for (auto &kv : rs) {
+    for (auto &kv : replica_gc_map) {
         replica_ptr &rep = kv.second.rep;
         if (rep->status() == partition_status::PS_POTENTIAL_SECONDARY) {
             learning_count++;
@@ -1965,10 +2035,9 @@ void replica_stub::on_disk_stat()
     uint64_t start = dsn_now_ns();
     disk_cleaning_report report{};
 
-    dsn::replication::disk_remove_useless_dirs(_fs_manager.get_available_data_dirs(), report);
+    dsn::replication::disk_remove_useless_dirs(_fs_manager.get_dir_nodes(), report);
     _fs_manager.update_disk_stat();
     update_disk_holding_replicas();
-    update_disks_status();
 
     _counter_replicas_error_replica_dir_count->set(report.error_replica_count);
     _counter_replicas_garbage_replica_dir_count->set(report.garbage_replica_count);
@@ -2048,9 +2117,12 @@ void replica_stub::open_replica(
     const std::shared_ptr<group_check_request> &group_check,
     const std::shared_ptr<configuration_update_request> &configuration_update)
 {
-    std::string dir = get_replica_dir(app.app_type.c_str(), id, false);
-    replica_ptr rep = nullptr;
-    if (!dir.empty()) {
+    replica_ptr rep;
+    std::string dir;
+    auto dn = _fs_manager.find_replica_dir(app.app_type, id);
+    if (dn != nullptr) {
+        dir = dn->replica_dir(app.app_type, id);
+        CHECK(dsn::utils::filesystem::directory_exists(dir), "dir({}) not exist", dir);
         // NOTICE: if partition is DDD, and meta select one replica as primary, it will execute the
         // load-process because of a.b.pegasus is exist, so it will never execute the restore
         // process below
@@ -2059,18 +2131,20 @@ void replica_stub::open_replica(
                  _primary_address_str,
                  group_check ? "with" : "without",
                  dir);
-        rep = replica::load(this, dir.c_str());
+        rep = load_replica(dn, dir.c_str());
 
         // if load data failed, re-open the `*.ori` folder which is the origin replica dir of disk
         // migration
         if (rep == nullptr) {
-            std::string origin_tmp_dir = get_replica_dir(
-                fmt::format("{}{}", app.app_type, replica_disk_migrator::kReplicaDirOriginSuffix)
-                    .c_str(),
-                id,
-                false);
-            if (!origin_tmp_dir.empty()) {
-                LOG_INFO("mark the dir {} is garbage, start revert and load disk migration origin "
+            const auto origin_dir_type =
+                fmt::format("{}{}", app.app_type, replica_disk_migrator::kReplicaDirOriginSuffix);
+            const auto origin_dn = _fs_manager.find_replica_dir(origin_dir_type, id);
+            if (origin_dn != nullptr) {
+                const auto origin_tmp_dir = origin_dn->replica_dir(origin_dir_type, id);
+                CHECK(dsn::utils::filesystem::directory_exists(origin_tmp_dir),
+                      "dir({}) not exist",
+                      origin_tmp_dir);
+                LOG_INFO("mark the dir {} as garbage, start revert and load disk migration origin "
                          "replica data({})",
                          dir,
                          origin_tmp_dir);
@@ -2082,9 +2156,9 @@ void replica_stub::open_replica(
                 boost::replace_first(
                     origin_dir, replica_disk_migrator::kReplicaDirOriginSuffix, "");
                 dsn::utils::filesystem::rename_path(origin_tmp_dir, origin_dir);
-                rep = replica::load(this, origin_dir.c_str());
+                rep = load_replica(origin_dn, origin_dir.c_str());
 
-                FAIL_POINT_INJECT_F("mock_replica_load", [&](string_view) -> void {});
+                FAIL_POINT_INJECT_F("mock_replica_load", [&](absl::string_view) -> void {});
             }
         }
     }
@@ -2132,11 +2206,11 @@ void replica_stub::open_replica(
                   "remove useless directory({}) failed",
                   dir);
         }
-        rep = replica::newr(this, id, app, restore_if_necessary, is_duplication_follower);
+        rep = new_replica(id, app, restore_if_necessary, is_duplication_follower);
     }
 
     if (rep == nullptr) {
-        LOG_INFO(
+        LOG_WARNING(
             "{}@{}: open replica failed, erase from opening replicas", id, _primary_address_str);
         zauto_write_lock l(_replicas_lock);
         CHECK_GT_MSG(_opening_replicas.erase(id),
@@ -2177,6 +2251,138 @@ void replica_stub::open_replica(
     }
 }
 
+replica *replica_stub::new_replica(gpid gpid,
+                                   const app_info &app,
+                                   bool restore_if_necessary,
+                                   bool is_duplication_follower,
+                                   const std::string &parent_dir)
+{
+    dir_node *dn = nullptr;
+    if (parent_dir.empty()) {
+        dn = _fs_manager.create_replica_dir_if_necessary(app.app_type, gpid);
+    } else {
+        dn = _fs_manager.create_child_replica_dir(app.app_type, gpid, parent_dir);
+    }
+    if (dn == nullptr) {
+        LOG_ERROR("could not allocate a new directory for replica {}", gpid);
+        return nullptr;
+    }
+    const auto &dir = dn->replica_dir(app.app_type, gpid);
+    CHECK(dsn::utils::filesystem::directory_exists(dir), "dir({}) not exist", dir);
+    auto *rep = new replica(this, gpid, app, dn, restore_if_necessary, is_duplication_follower);
+    error_code err;
+    if (restore_if_necessary && (err = rep->restore_checkpoint()) != dsn::ERR_OK) {
+        LOG_ERROR("{}: try to restore replica failed, error({})", rep->name(), err);
+        clear_on_failure(rep);
+        return nullptr;
+    }
+
+    if (is_duplication_follower &&
+        (err = rep->get_replica_follower()->duplicate_checkpoint()) != dsn::ERR_OK) {
+        LOG_ERROR("{}: try to duplicate replica checkpoint failed, error({}) and please check "
+                  "previous detail error log",
+                  rep->name(),
+                  err);
+        clear_on_failure(rep);
+        return nullptr;
+    }
+
+    err = rep->initialize_on_new();
+    if (err != ERR_OK) {
+        LOG_ERROR("{}: new replica failed, err = {}", rep->name(), err);
+        clear_on_failure(rep);
+        return nullptr;
+    }
+
+    LOG_DEBUG("{}: new replica succeed", rep->name());
+    return rep;
+}
+
+replica *replica_stub::load_replica(dir_node *dn, const char *dir)
+{
+    FAIL_POINT_INJECT_F("mock_replica_load",
+                        [&](absl::string_view) -> replica * { return nullptr; });
+
+    char splitters[] = {'\\', '/', 0};
+    std::string name = utils::get_last_component(std::string(dir), splitters);
+    if (name.empty()) {
+        LOG_ERROR("invalid replica dir {}", dir);
+        return nullptr;
+    }
+
+    char app_type[128];
+    int32_t app_id, pidx;
+    if (3 != sscanf(name.c_str(), "%d.%d.%s", &app_id, &pidx, app_type)) {
+        LOG_ERROR("invalid replica dir {}", dir);
+        return nullptr;
+    }
+
+    gpid pid(app_id, pidx);
+    if (!utils::filesystem::directory_exists(dir)) {
+        LOG_ERROR("replica dir {} not exist", dir);
+        return nullptr;
+    }
+
+    dsn::app_info info;
+    replica_app_info info2(&info);
+    std::string path = utils::filesystem::path_combine(dir, replica::kAppInfo);
+    auto err = info2.load(path);
+    if (ERR_OK != err) {
+        LOG_ERROR("load app-info from {} failed, err = {}", path, err);
+        return nullptr;
+    }
+
+    if (info.app_type != app_type) {
+        LOG_ERROR("unmatched app type {} for {}", info.app_type, path);
+        return nullptr;
+    }
+
+    if (info.partition_count < pidx) {
+        LOG_ERROR("partition[{}], count={}, this replica may be partition split garbage partition, "
+                  "ignore it",
+                  pid,
+                  info.partition_count);
+        return nullptr;
+    }
+
+    // The replica's directory must exists when creating a replica.
+    CHECK_EQ(dir, dn->replica_dir(app_type, pid));
+    auto *rep = new replica(this, pid, info, dn, false);
+    err = rep->initialize_on_load();
+    if (err != ERR_OK) {
+        LOG_ERROR("{}: load replica failed, err = {}", rep->name(), err);
+        rep->close();
+        delete rep;
+        rep = nullptr;
+
+        // clear work on failure
+        if (dsn::utils::filesystem::directory_exists(dir)) {
+            move_to_err_path(dir, "load replica");
+            _counter_replicas_recent_replica_move_error_count->increment();
+            _fs_manager.remove_replica(pid);
+        }
+
+        return nullptr;
+    }
+
+    LOG_INFO("{}: load replica succeed", rep->name());
+    return rep;
+}
+
+void replica_stub::clear_on_failure(replica *rep)
+{
+    const auto rep_dir = rep->dir();
+    const auto pid = rep->get_gpid();
+
+    rep->close();
+    delete rep;
+    rep = nullptr;
+
+    // clear work on failure
+    utils::filesystem::remove_path(rep_dir);
+    _fs_manager.remove_replica(pid);
+}
+
 task_ptr replica_stub::begin_close_replica(replica_ptr r)
 {
     CHECK(r->status() == partition_status::PS_ERROR ||
@@ -2191,32 +2397,31 @@ task_ptr replica_stub::begin_close_replica(replica_ptr r)
     gpid id = r->get_gpid();
 
     zauto_write_lock l(_replicas_lock);
-
-    if (_replicas.erase(id) > 0) {
-        _counter_replicas_count->decrement();
-
-        int delay_ms = 0;
-        if (r->status() == partition_status::PS_INACTIVE) {
-            delay_ms = FLAGS_gc_memory_replica_interval_ms;
-            LOG_INFO("{}: delay {} milliseconds to close replica, status = PS_INACTIVE",
-                     r->name(),
-                     delay_ms);
-        }
-
-        app_info a_info = *(r->get_app_info());
-        replica_info r_info;
-        get_replica_info(r_info, r);
-        task_ptr task = tasking::enqueue(LPC_CLOSE_REPLICA,
-                                         &_tracker,
-                                         [=]() { close_replica(r); },
-                                         0,
-                                         std::chrono::milliseconds(delay_ms));
-        _closing_replicas[id] = std::make_tuple(task, r, std::move(a_info), std::move(r_info));
-        _counter_replicas_closing_count->increment();
-        return task;
-    } else {
+    if (_replicas.erase(id) == 0) {
         return nullptr;
     }
+
+    _counter_replicas_count->decrement();
+
+    int delay_ms = 0;
+    if (r->status() == partition_status::PS_INACTIVE) {
+        delay_ms = FLAGS_gc_memory_replica_interval_ms;
+        LOG_INFO("{}: delay {} milliseconds to close replica, status = PS_INACTIVE",
+                 r->name(),
+                 delay_ms);
+    }
+
+    app_info a_info = *(r->get_app_info());
+    replica_info r_info;
+    get_replica_info(r_info, r);
+    task_ptr task = tasking::enqueue(LPC_CLOSE_REPLICA,
+                                     &_tracker,
+                                     [=]() { close_replica(r); },
+                                     0,
+                                     std::chrono::milliseconds(delay_ms));
+    _closing_replicas[id] = std::make_tuple(task, r, std::move(a_info), std::move(r_info));
+    _counter_replicas_closing_count->increment();
+    return task;
 }
 
 void replica_stub::close_replica(replica_ptr r)
@@ -2236,6 +2441,12 @@ void replica_stub::close_replica(replica_ptr r)
             id, std::make_pair(std::get<2>(find->second), std::get<3>(find->second)));
         _closing_replicas.erase(find);
         _counter_replicas_closing_count->decrement();
+    }
+
+    _fs_manager.remove_replica(id);
+    if (r->is_data_corrupted()) {
+        move_to_err_path(r->dir(), "trash replica");
+        _counter_replicas_recent_replica_move_error_count->increment();
     }
 
     LOG_INFO("{}: finish to close replica", name);
@@ -2304,6 +2515,11 @@ void replica_stub::open_service()
         RPC_DETECT_HOTKEY, "detect_hotkey", &replica_stub::on_detect_hotkey);
     register_rpc_handler_with_rpc_holder(
         RPC_ADD_NEW_DISK, "add_new_disk", &replica_stub::on_add_new_disk);
+
+    // nfs
+    register_async_rpc_handler(dsn::service::RPC_NFS_COPY, "copy", &replica_stub::on_nfs_copy);
+    register_async_rpc_handler(
+        dsn::service::RPC_NFS_GET_FILE_SIZE, "get_file_size", &replica_stub::on_nfs_get_file_size);
 
     register_ctrl_command();
 }
@@ -2677,24 +2893,10 @@ void replica_stub::close()
         _mem_release_timer_task = nullptr;
     }
 
+    wait_closing_replicas_finished();
+
     {
         zauto_write_lock l(_replicas_lock);
-        while (!_closing_replicas.empty()) {
-            task_ptr task = std::get<0>(_closing_replicas.begin()->second);
-            gpid tmp_gpid = _closing_replicas.begin()->first;
-            _replicas_lock.unlock_write();
-
-            task->wait();
-
-            _replicas_lock.lock_write();
-            // task will automatically remove this replica from _closing_replicas
-            if (!_closing_replicas.empty()) {
-                CHECK_NE_MSG(tmp_gpid,
-                             _closing_replicas.begin()->first,
-                             "this replica '{}' should has been removed",
-                             tmp_gpid.to_string());
-            }
-        }
 
         while (!_opening_replicas.empty()) {
             task_ptr task = _opening_replicas.begin()->second;
@@ -2715,44 +2917,6 @@ void replica_stub::close()
         }
     }
     _is_running = false;
-}
-
-std::string replica_stub::get_replica_dir(const char *app_type, gpid id, bool create_new)
-{
-    std::string gpid_str = fmt::format("{}.{}", id, app_type);
-    std::string replica_dir;
-    bool is_dir_exist = false;
-    for (const std::string &data_dir : _fs_manager.get_available_data_dirs()) {
-        std::string dir = utils::filesystem::path_combine(data_dir, gpid_str);
-        if (utils::filesystem::directory_exists(dir)) {
-            CHECK(!is_dir_exist, "replica dir conflict: {} <--> {}", dir, replica_dir);
-            replica_dir = dir;
-            is_dir_exist = true;
-        }
-    }
-    if (replica_dir.empty() && create_new) {
-        _fs_manager.allocate_dir(id, app_type, replica_dir);
-    }
-    return replica_dir;
-}
-
-std::string
-replica_stub::get_child_dir(const char *app_type, gpid child_pid, const std::string &parent_dir)
-{
-    std::string gpid_str = fmt::format("{}.{}", child_pid.to_string(), app_type);
-    std::string child_dir;
-    for (const std::string &data_dir : _fs_manager.get_available_data_dirs()) {
-        std::string dir = utils::filesystem::path_combine(data_dir, gpid_str);
-        // <parent_dir> = <prefix>/<gpid>.<app_type>
-        // check if <parent_dir>'s <prefix> is equal to <data_dir>
-        if (parent_dir.substr(0, data_dir.size() + 1) == data_dir + "/") {
-            child_dir = dir;
-            _fs_manager.add_replica(child_pid, child_dir);
-            break;
-        }
-    }
-    CHECK(!child_dir.empty(), "can not find parent_dir {} in data_dirs", parent_dir);
-    return child_dir;
 }
 
 #ifdef DSN_ENABLE_GPERF
@@ -2844,14 +3008,17 @@ replica_ptr replica_stub::create_child_replica_if_not_found(gpid child_pid,
                                                             app_info *app,
                                                             const std::string &parent_dir)
 {
-    FAIL_POINT_INJECT_F("replica_stub_create_child_replica_if_not_found",
-                        [=](dsn::string_view) -> replica_ptr {
-                            replica *rep = new replica(this, child_pid, *app, "./", false);
-                            rep->_config.status = partition_status::PS_INACTIVE;
-                            _replicas.insert(replicas::value_type(child_pid, rep));
-                            LOG_INFO("mock create_child_replica_if_not_found succeed");
-                            return rep;
-                        });
+    FAIL_POINT_INJECT_F(
+        "replica_stub_create_child_replica_if_not_found", [=](absl::string_view) -> replica_ptr {
+            const auto dn =
+                _fs_manager.create_child_replica_dir(app->app_type, child_pid, parent_dir);
+            CHECK_NOTNULL(dn, "");
+            auto *rep = new replica(this, child_pid, *app, dn, false);
+            rep->_config.status = partition_status::PS_INACTIVE;
+            _replicas.insert(replicas::value_type(child_pid, rep));
+            LOG_INFO("mock create_child_replica_if_not_found succeed");
+            return rep;
+        });
 
     zauto_write_lock l(_replicas_lock);
     auto it = _replicas.find(child_pid);
@@ -2865,7 +3032,7 @@ replica_ptr replica_stub::create_child_replica_if_not_found(gpid child_pid,
             LOG_WARNING("failed create child replica({}) because it is under close", child_pid);
             return nullptr;
         } else {
-            replica *rep = replica::newr(this, child_pid, *app, false, false, parent_dir);
+            replica *rep = new_replica(child_pid, *app, false, false, parent_dir);
             if (rep != nullptr) {
                 auto pr = _replicas.insert(replicas::value_type(child_pid, rep));
                 CHECK(pr.second, "child replica {} has been existed", rep->name());
@@ -2887,7 +3054,8 @@ void replica_stub::split_replica_error_handler(gpid pid, local_execution handler
 dsn::error_code
 replica_stub::split_replica_exec(dsn::task_code code, gpid pid, local_execution handler)
 {
-    FAIL_POINT_INJECT_F("replica_stub_split_replica_exec", [](dsn::string_view) { return ERR_OK; });
+    FAIL_POINT_INJECT_F("replica_stub_split_replica_exec",
+                        [](absl::string_view) { return ERR_OK; });
     replica_ptr replica = pid.get_app_id() == 0 ? nullptr : get_replica(pid);
     if (replica && handler) {
         tasking::enqueue(code,
@@ -2928,22 +3096,20 @@ void replica_stub::on_update_child_group_partition_count(update_child_group_part
 
 void replica_stub::update_disk_holding_replicas()
 {
-    for (const auto &dir_node : _fs_manager._dir_nodes) {
-        // clear the holding_primary_replicas/holding_secondary_replicas and re-calculate it from
-        // holding_replicas
-        dir_node->holding_primary_replicas.clear();
-        dir_node->holding_secondary_replicas.clear();
-        for (const auto &holding_replicas : dir_node->holding_replicas) {
-            const std::set<dsn::gpid> &pids = holding_replicas.second;
+    for (const auto &dn : _fs_manager.get_dir_nodes()) {
+        dn->holding_primary_replicas.clear();
+        dn->holding_secondary_replicas.clear();
+        for (const auto &holding_replicas : dn->holding_replicas) {
+            const auto &pids = holding_replicas.second;
             for (const auto &pid : pids) {
-                replica_ptr replica = get_replica(pid);
-                if (replica == nullptr) {
+                const auto rep = get_replica(pid);
+                if (rep == nullptr) {
                     continue;
                 }
-                if (replica->status() == partition_status::PS_PRIMARY) {
-                    dir_node->holding_primary_replicas[holding_replicas.first].emplace(pid);
-                } else if (replica->status() == partition_status::PS_SECONDARY) {
-                    dir_node->holding_secondary_replicas[holding_replicas.first].emplace(pid);
+                if (rep->status() == partition_status::PS_PRIMARY) {
+                    dn->holding_primary_replicas[holding_replicas.first].emplace(pid);
+                } else if (rep->status() == partition_status::PS_SECONDARY) {
+                    dn->holding_secondary_replicas[holding_replicas.first].emplace(pid);
                 }
             }
         }
@@ -3033,30 +3199,33 @@ void replica_stub::query_app_manual_compact_status(
     }
 }
 
-void replica_stub::update_disks_status()
-{
-    for (const auto &dir_node : _fs_manager._status_updated_dir_nodes) {
-        for (const auto &holding_replicas : dir_node->holding_replicas) {
-            const std::set<gpid> &pids = holding_replicas.second;
-            for (const auto &pid : pids) {
-                replica_ptr replica = get_replica(pid);
-                if (replica == nullptr) {
-                    continue;
-                }
-                replica->set_disk_status(dir_node->status);
-                LOG_INFO("{} update disk_status to {}",
-                         replica->name(),
-                         enum_to_string(replica->get_disk_status()));
-            }
-        }
-    }
-}
-
 void replica_stub::update_config(const std::string &name)
 {
     // The new value has been validated and FLAGS_* has been updated, it's safety to use it
     // directly.
     UPDATE_CONFIG(_config_sync_timer_task->update_interval, config_sync_interval_ms, name);
+}
+
+void replica_stub::wait_closing_replicas_finished()
+{
+    zauto_write_lock l(_replicas_lock);
+    while (!_closing_replicas.empty()) {
+        auto task = std::get<0>(_closing_replicas.begin()->second);
+        auto first_gpid = _closing_replicas.begin()->first;
+
+        // TODO(yingchun): improve the code
+        _replicas_lock.unlock_write();
+        task->wait();
+        _replicas_lock.lock_write();
+
+        // task will automatically remove this replica from '_closing_replicas'
+        if (!_closing_replicas.empty()) {
+            CHECK_NE_MSG(first_gpid,
+                         _closing_replicas.begin()->first,
+                         "this replica '{}' should has been removed",
+                         first_gpid);
+        }
+    }
 }
 
 } // namespace replication

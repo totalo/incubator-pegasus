@@ -20,6 +20,7 @@
 #include "utils/fmt_logging.h"
 #include "http_server.h"
 #include "utils/errors.h"
+#include "utils/singleton.h"
 
 namespace dsn {
 
@@ -34,11 +35,11 @@ public:
     std::shared_ptr<http_call> find(const std::string &path) const
     {
         std::lock_guard<std::mutex> guard(_mu);
-        auto it = _call_map.find(path);
-        if (it == _call_map.end()) {
+        const auto &iter = _call_map.find(path);
+        if (iter == _call_map.end()) {
             return nullptr;
         }
-        return it->second;
+        return iter->second;
     }
 
     void remove(const std::string &path)
@@ -47,12 +48,17 @@ public:
         _call_map.erase(path);
     }
 
+    void add(const std::shared_ptr<http_call> &call)
+    {
+        std::lock_guard<std::mutex> guard(_mu);
+        CHECK_EQ_MSG(_call_map.count(call->path), 0, "{} has been added", call->path);
+        _call_map[call->path] = call;
+    }
+
     void add(std::unique_ptr<http_call> call_uptr)
     {
         auto call = std::shared_ptr<http_call>(call_uptr.release());
-        std::lock_guard<std::mutex> guard(_mu);
-        CHECK_EQ_MSG(_call_map.count(call->path), 0, call->path);
-        _call_map[call->path] = call;
+        add(call);
     }
 
     std::vector<std::shared_ptr<http_call>> list_all_calls() const

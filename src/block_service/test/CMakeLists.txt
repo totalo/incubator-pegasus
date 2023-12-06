@@ -25,20 +25,16 @@ set(MY_PROJ_LIBS
     dsn_replication_common
     dsn.block_service
     dsn.block_service.local
-    dsn.block_service.fds
     dsn.block_service.hdfs
     dsn_runtime
-    galaxy-fds-sdk-cpp
-    PocoNet
-    PocoFoundation
-    PocoNetSSL
-    PocoJSON
+    dsn_utils
     gtest
     gtest_main
     hdfs
-    )
+    test_utils
+    rocksdb)
 
-set(MY_BOOST_LIBS Boost::system Boost::filesystem Boost::regex)
+set(MY_BOOST_LIBS Boost::system Boost::filesystem)
 
 set(MY_BINPLACES
     config-test.ini

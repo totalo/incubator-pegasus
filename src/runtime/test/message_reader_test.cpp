@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
+#include <string.h>
+#include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/rpc/message_parser.h"
+#include "utils/blob.h"
 
 namespace dsn {
 

@@ -26,12 +26,27 @@
 
 #include "misc.h"
 
+#include <boost/lexical_cast.hpp>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <stdio.h>
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <set>
+#include <string>
+#include <thread>
+#include <unordered_map>
 
-#include <boost/lexical_cast.hpp>
-
-#include "common/replication_common.h"
+#include "common/fs_manager.h"
+#include "common/gpid.h"
+#include "common/replication_enums.h"
+#include "common/replication_other_types.h"
+#include "dsn.layer2_types.h"
+#include "duplication_types.h"
+#include "meta_admin_types.h"
+#include "metadata_types.h"
 #include "utils/fmt_logging.h"
 #include "utils/rand.h"
 
@@ -188,10 +203,10 @@ void generate_node_fs_manager(const app_mapper &apps,
     for (const auto &kv : nodes) {
         const node_state &ns = kv.second;
         if (nfm.find(ns.addr()) == nfm.end()) {
-            nfm.emplace(ns.addr(), std::make_shared<fs_manager>(true));
+            nfm.emplace(ns.addr(), std::make_shared<fs_manager>());
         }
         fs_manager &manager = *(nfm.find(ns.addr())->second);
-        manager.initialize(data_dirs, tags, true);
+        manager.initialize(data_dirs, tags);
         ns.for_each_partition([&](const dsn::gpid &pid) {
             const config_context &cc = *get_config_context(apps, pid);
             snprintf(pid_dir,
@@ -225,19 +240,21 @@ void track_disk_info_check_and_apply(const dsn::replication::configuration_propo
     std::string dir;
     replica_info ri;
     switch (act.type) {
-    case config_type::CT_ASSIGN_PRIMARY:
-        target_manager->allocate_dir(pid, "test", dir);
-        CHECK_EQ(dsn::ERR_OK, target_manager->get_disk_tag(dir, ri.disk_tag));
+    case config_type::CT_ASSIGN_PRIMARY: {
+        auto selected = target_manager->find_best_dir_for_new_replica(pid);
+        CHECK_NOTNULL(selected, "");
+        selected->holding_replicas[pid.get_app_id()].emplace(pid);
         cc->collect_serving_replica(act.target, ri);
         break;
-
+    }
     case config_type::CT_ADD_SECONDARY:
-    case config_type::CT_ADD_SECONDARY_FOR_LB:
-        node_manager->allocate_dir(pid, "test", dir);
-        CHECK_EQ(dsn::ERR_OK, node_manager->get_disk_tag(dir, ri.disk_tag));
+    case config_type::CT_ADD_SECONDARY_FOR_LB: {
+        auto selected = node_manager->find_best_dir_for_new_replica(pid);
+        CHECK_NOTNULL(selected, "");
+        selected->holding_replicas[pid.get_app_id()].emplace(pid);
         cc->collect_serving_replica(act.node, ri);
         break;
-
+    }
     case config_type::CT_DOWNGRADE_TO_SECONDARY:
     case config_type::CT_UPGRADE_TO_PRIMARY:
         break;

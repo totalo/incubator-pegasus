@@ -19,13 +19,17 @@
 
 #pragma once
 
+#include <string>
+
+#include "rrdb/rrdb_types.h"
+#include "utils/fmt_utils.h"
+
 namespace pegasus {
 
 inline std::string cas_check_type_to_string(dsn::apps::cas_check_type::type type)
 {
-    using namespace dsn::apps;
-    auto it = _cas_check_type_VALUES_TO_NAMES.find(type);
-    if (it == _cas_check_type_VALUES_TO_NAMES.end()) {
+    auto it = dsn::apps::_cas_check_type_VALUES_TO_NAMES.find(type);
+    if (it == dsn::apps::_cas_check_type_VALUES_TO_NAMES.end()) {
         return std::string("INVALID=") + std::to_string(int(type));
     }
     return it->second;
@@ -37,3 +41,11 @@ inline bool cas_is_check_operand_needed(dsn::apps::cas_check_type::type type)
 }
 
 } // namespace pegasus
+
+namespace dsn {
+namespace apps {
+USER_DEFINED_ENUM_FORMATTER(cas_check_type::type)
+USER_DEFINED_ENUM_FORMATTER(filter_type::type)
+USER_DEFINED_ENUM_FORMATTER(mutate_operation::type)
+} // namespace apps
+} // namespace dsn

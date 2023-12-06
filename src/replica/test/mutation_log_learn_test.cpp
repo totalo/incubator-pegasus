@@ -24,24 +24,42 @@
  * THE SOFTWARE.
  */
 
+#include <stdint.h>
 #include <chrono>
-#include <condition_variable>
+#include <iostream>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
 
-#include <gtest/gtest.h>
-
+#include "common/gpid.h"
+#include "common/replication.codes.h"
+#include "common/replication_other_types.h"
+#include "consensus_types.h"
+#include "gtest/gtest.h"
+#include "replica/mutation.h"
 #include "replica/mutation_log.h"
+#include "replica/test/mock_utils.h"
 #include "replica_test_base.h"
+#include "runtime/task/task_code.h"
+#include "utils/autoref_ptr.h"
+#include "utils/binary_writer.h"
+#include "utils/blob.h"
 #include "utils/filesystem.h"
 #include "utils/strings.h"
 
 namespace dsn {
+class message_ex;
+
 namespace replication {
 
-class mutation_log_test : public replica_test_base
+class mutation_log_learn_test : public replica_test_base
 {
 };
 
-TEST_F(mutation_log_test, learn)
+INSTANTIATE_TEST_CASE_P(, mutation_log_learn_test, ::testing::Values(false, true));
+
+TEST_P(mutation_log_learn_test, learn)
 {
     std::chrono::steady_clock clock;
     gpid gpid(1, 1);

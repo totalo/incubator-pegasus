@@ -19,22 +19,36 @@
 
 #pragma once
 
+#include <boost/asio/deadline_timer.hpp>
+#include <event2/http.h>        // IWYU pragma: keep
+#include <event2/http_struct.h> // IWYU pragma: keep
+#include <stdint.h>
+#include <map>
+#include <memory>
+#include <string>
+
+#include "common/json_helper.h"
 #include "utils/singleton.h"
 #include "utils/synchronize.h"
-#include "common/json_helper.h"
 
-#include <boost/asio/deadline_timer.hpp>
-#include <event2/http.h>
-#include <event2/http_struct.h>
-
-#include <prometheus/registry.h>
-#include <prometheus/exposer.h>
+namespace boost {
+namespace system {
+class error_code;
+} // namespace system
+} // namespace boost
+namespace prometheus {
+class Exposer;
+class Gauge;
+class Registry;
+template <typename T>
+class Family;
+} // namespace prometheus
 
 namespace pegasus {
 namespace server {
 
 // Falcon field description:
-//   http://git.n.xiaomi.com/falcon/doc/wikis/instance_monitor
+//   https://book.open-falcon.org/zh/philosophy/data-model.html
 struct falcon_metric
 {
     std::string endpoint;    // metric host

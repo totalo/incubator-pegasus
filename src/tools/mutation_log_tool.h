@@ -24,23 +24,16 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
-#include <string>
-#include <iostream>
+#include <stdint.h>
 #include <functional>
-#include "runtime/rpc/rpc_message.h"
+#include <iostream>
+#include <string>
 
 namespace dsn {
+class message_ex;
+
 namespace replication {
 
 class mutation_log_tool

@@ -15,9 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
+#include <fmt/core.h>
+#include <stdint.h>
+#include <iostream>
+#include <string>
+
+#include "gtest/gtest.h"
+#include "utils/error_code.h"
+#include "utils/errors.h"
 #include "utils/flags.h"
-#include <fmt/format.h>
 
 namespace dsn {
 namespace utils {

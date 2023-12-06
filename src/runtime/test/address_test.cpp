@@ -24,8 +24,12 @@
  * THE SOFTWARE.
  */
 
-#include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <stdint.h>
+#include <string>
+#include <vector>
 
+#include "gtest/gtest.h"
 #include "runtime/rpc/group_address.h"
 #include "runtime/rpc/rpc_address.h"
 

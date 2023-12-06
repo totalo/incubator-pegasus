@@ -17,11 +17,14 @@
 
 #pragma once
 
+#include <string>
+
 #include "utils/errors.h"
 
 namespace dsn {
 namespace security {
 extern error_s run_kinit();
+extern error_s run_get_principal_without_kinit();
 extern const std::string &get_username();
 } // namespace security
 } // namespace dsn

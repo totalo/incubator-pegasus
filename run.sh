@@ -21,10 +21,17 @@ set -e
 LOCAL_HOSTNAME=`hostname -f`
 PID=$$
 ROOT=`pwd`
-export BUILD_DIR=$ROOT/src/builder
+export BUILD_ROOT_DIR=${ROOT}/build
+export BUILD_LATEST_DIR=${BUILD_ROOT_DIR}/latest
 export REPORT_DIR="$ROOT/test_report"
 export THIRDPARTY_ROOT=$ROOT/thirdparty
-export LD_LIBRARY_PATH=$BUILD_DIR/output/lib:$THIRDPARTY_ROOT/output/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$JAVA_HOME/jre/lib/amd64/server:${BUILD_LATEST_DIR}/output/lib:${THIRDPARTY_ROOT}/output/lib:${LD_LIBRARY_PATH}
+# Disable AddressSanitizerOneDefinitionRuleViolation, see https://github.com/google/sanitizers/issues/1017 for details.
+export ASAN_OPTIONS=detect_odr_violation=0
+# See https://github.com/gperftools/gperftools/wiki/gperftools'-stacktrace-capturing-methods-and-their-issues.
+# Now we choose libgcc, because of https://github.com/apache/incubator-pegasus/issues/1685.
+export TCMALLOC_STACKTRACE_METHOD=libgcc  # Can be generic_fp, generic_fp_unsafe, libunwind or libgcc
+export TCMALLOC_STACKTRACE_METHOD_VERBOSE=1
 
 function usage()
 {
@@ -91,6 +98,7 @@ function usage_build()
     echo "   --skip_thirdparty     whether to skip building thirdparties, default no"
     echo "   --enable_rocksdb_portable      build a portable rocksdb binary"
     echo "   --test                whether to build test binaries"
+    echo "   --iwyu                specify the binary path of 'include-what-you-use' when build with IWYU"
 }
 
 function exit_if_fail() {
@@ -116,9 +124,10 @@ function run_build()
     ENABLE_GPERF=ON
     SKIP_THIRDPARTY=NO
     SANITIZER=""
-    ROCKSDB_PORTABLE=OFF
+    ROCKSDB_PORTABLE=0
     USE_JEMALLOC=OFF
     BUILD_TEST=OFF
+    IWYU=""
     while [[ $# > 0 ]]; do
         key="$1"
         case $key in
@@ -174,7 +183,7 @@ function run_build()
                 SKIP_THIRDPARTY=YES
                 ;;
             --enable_rocksdb_portable)
-                ROCKSDB_PORTABLE=ON
+                ROCKSDB_PORTABLE=1
                 ;;
             --use_jemalloc)
                 ENABLE_GPERF=OFF
@@ -182,6 +191,10 @@ function run_build()
                 ;;
             --test)
                 BUILD_TEST=ON
+                ;;
+            --iwyu)
+                IWYU="$2"
+                shift
                 ;;
             *)
                 echo "ERROR: unknown option \"$key\""
@@ -202,16 +215,14 @@ function run_build()
 
     CMAKE_OPTIONS="-DCMAKE_C_COMPILER=${C_COMPILER}
                    -DCMAKE_CXX_COMPILER=${CXX_COMPILER}
-                   -DUSE_JEMALLOC=${USE_JEMALLOC}
-                   -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
-                   -DENABLE_GCOV=${ENABLE_GCOV}
-                   -DENABLE_GPERF=${ENABLE_GPERF}
-                   -DBoost_NO_BOOST_CMAKE=ON
-                   -DBOOST_ROOT=${THIRDPARTY_ROOT}/output
-                   -DBoost_NO_SYSTEM_PATHS=ON"
+                   -DUSE_JEMALLOC=${USE_JEMALLOC}"
 
-    if [ "$(uname)" == "Darwin" ]; then
-        CMAKE_OPTIONS="${CMAKE_OPTIONS} -DMACOS_OPENSSL_ROOT_DIR=/usr/local/opt/openssl"
+    echo "BUILD_TYPE=$BUILD_TYPE"
+    if [ "$BUILD_TYPE" == "debug" ]
+    then
+        CMAKE_OPTIONS="$CMAKE_OPTIONS -DCMAKE_BUILD_TYPE=Debug"
+    else
+        CMAKE_OPTIONS="$CMAKE_OPTIONS -DCMAKE_BUILD_TYPE=Release"
     fi
 
     if [ ! -z "${SANITIZER}" ]; then
@@ -246,48 +257,77 @@ function run_build()
         cd ..
     fi
 
+    CMAKE_OPTIONS="${CMAKE_OPTIONS}
+                   -DENABLE_GCOV=${ENABLE_GCOV}
+                   -DENABLE_GPERF=${ENABLE_GPERF}
+                   -DBoost_NO_BOOST_CMAKE=ON
+                   -DBOOST_ROOT=${THIRDPARTY_ROOT}/output
+                   -DBoost_NO_SYSTEM_PATHS=ON"
+
     echo "INFO: start build Pegasus..."
-    BUILD_DIR="${ROOT}/src/${BUILD_TYPE}_${SANITIZER}_builder"
+    BUILD_DIR="${BUILD_ROOT_DIR}/${BUILD_TYPE}_${SANITIZER}"
+    BUILD_DIR=${BUILD_DIR%_*}
+
+    if [ ! -z "${IWYU}" ]; then
+        BUILD_DIR="${BUILD_DIR}_iwyu"
+    fi
+
     if [ "$CLEAR" == "YES" ]; then
         echo "Clear $BUILD_DIR ..."
         rm -rf $BUILD_DIR
+        rm -f ${ROOT}/src/base/rrdb_types.cpp
+        rm -f ${ROOT}/src/include/rrdb/rrdb_types.h
+        rm -f ${ROOT}/src/common/serialization_helper/dsn.layer2_types.h
+        rm -f ${ROOT}/src/runtime/dsn.layer2_types.cpp
+        rm -f ${ROOT}/src/include/pegasus/git_commit.h
     fi
 
     pushd ${ROOT}
-    echo "Gen thrift"
-    # TODO(yingchun): should be optimized
-    python3 $ROOT/scripts/compile_thrift.py
-    sh ${ROOT}/scripts/recompile_thrift.sh
+    if [ ! -f "${ROOT}/src/common/serialization_helper/dsn.layer2_types.h" ]; then
+        echo "Gen thrift"
+        # TODO(yingchun): should be optimized
+        python3 $ROOT/scripts/compile_thrift.py
+        sh ${ROOT}/scripts/recompile_thrift.sh
+    fi
 
     if [ ! -d "$BUILD_DIR" ]; then
         mkdir -p $BUILD_DIR
 
         echo "Running cmake Pegasus..."
         pushd $BUILD_DIR
+        if [ ! -z "${IWYU}" ]; then
+            CMAKE_OPTIONS="${CMAKE_OPTIONS} -DCMAKE_CXX_INCLUDE_WHAT_YOU_USE=${IWYU}"
+        fi
         CMAKE_OPTIONS="${CMAKE_OPTIONS} -DBUILD_TEST=${BUILD_TEST}"
-        cmake ../.. -DCMAKE_INSTALL_PREFIX=$BUILD_DIR/output $CMAKE_OPTIONS
+        cmake ${ROOT} -DCMAKE_INSTALL_PREFIX=$BUILD_DIR/output $CMAKE_OPTIONS
         exit_if_fail $?
     fi
 
-    echo "Gen git_commit.h ..."
-    pushd "$ROOT/src"
-    PEGASUS_GIT_COMMIT="non-git-repo"
-    if git rev-parse HEAD; then # this is a git repo
-        PEGASUS_GIT_COMMIT=$(git rev-parse HEAD)
-    fi
-    echo "PEGASUS_GIT_COMMIT=${PEGASUS_GIT_COMMIT}"
     GIT_COMMIT_FILE=$ROOT/src/include/pegasus/git_commit.h
-    echo "Generating $GIT_COMMIT_FILE..."
-    echo "#pragma once" >$GIT_COMMIT_FILE
-    echo "#define PEGASUS_GIT_COMMIT \"$PEGASUS_GIT_COMMIT\"" >>$GIT_COMMIT_FILE
+    if [ ! -f "${GIT_COMMIT_FILE}" ]; then
+        echo "Gen git_commit.h ..."
+        pushd "$ROOT/src"
+        PEGASUS_GIT_COMMIT="non-git-repo"
+        if git rev-parse HEAD; then # this is a git repo
+            PEGASUS_GIT_COMMIT=$(git rev-parse HEAD)
+        fi
+        echo "PEGASUS_GIT_COMMIT=${PEGASUS_GIT_COMMIT}"
+        echo "Generating $GIT_COMMIT_FILE..."
+        echo "#pragma once" >$GIT_COMMIT_FILE
+        echo "#define PEGASUS_GIT_COMMIT \"$PEGASUS_GIT_COMMIT\"" >>$GIT_COMMIT_FILE
+    fi
 
     # rebuild link
-    rm -f ${ROOT}/src/builder
-    ln -s ${BUILD_DIR} ${ROOT}/src/builder
+    rm -f ${BUILD_LATEST_DIR}
+    ln -s ${BUILD_DIR} ${BUILD_LATEST_DIR}
 
     echo "[$(date)] Building Pegasus ..."
     pushd $BUILD_DIR
-    make install $MAKE_OPTIONS
+    if [ ! -z "${IWYU}" ]; then
+        make $MAKE_OPTIONS 2> iwyu.out
+    else
+        make install $MAKE_OPTIONS
+    fi
     exit_if_fail $?
 
     echo "Build finish time: `date`"
@@ -307,6 +347,8 @@ function usage_test()
     echo "                     e.g., \"pegasus_unit_test,dsn_runtime_tests,dsn_meta_state_tests\","
     echo "                     if not set, then run all tests"
     echo "   -k|--keep_onebox  whether keep the onebox after the test[default false]"
+    echo "   --onebox_opts     update configs for onebox, e.g. key1=value1,key2=value2"
+    echo "   --test_opts       update configs for tests, e.g. key1=value1,key2=value2"
 }
 function run_test()
 {
@@ -321,6 +363,7 @@ function run_test()
       detect_hotspot_test
       dsn_aio_test
       dsn_block_service_test
+      dsn_client_test
       dsn.failure_detector.tests
       dsn_http_test
       dsn_meta_state_tests
@@ -346,6 +389,8 @@ function run_test()
       restore_test
       throttle_test
     )
+    local onebox_opts=""
+    local test_opts=""
     while [[ $# > 0 ]]; do
         key="$1"
         case $key in
@@ -362,6 +407,14 @@ function run_test()
                 ;;
             --enable_gcov)
                 enable_gcov="yes"
+                ;;
+            --onebox_opts)
+                onebox_opts=$2
+                shift
+                ;;
+            --test_opts)
+                test_opts=$2
+                shift
                 ;;
             *)
                 echo "Error: unknown option \"$key\""
@@ -380,17 +433,16 @@ function run_test()
         mkdir -p $REPORT_DIR
     fi
 
-    BUILD_DIR=$ROOT/src/builder
     if [ "$test_modules" == "" ]; then
         test_modules=$(IFS=,; echo "${all_tests[*]}")
     fi
     echo "test_modules=$test_modules"
 
     # download bulk load test data
-    if [[ "$test_modules" =~ "bulk_load_test" && ! -d "$ROOT/src/test/function_test/bulk_load_test/pegasus-bulk-load-function-test-files" ]]; then
+    if [[ "$test_modules" =~ "bulk_load_test" && ! -d "$ROOT/src/test/function_test/bulk_load/pegasus-bulk-load-function-test-files" ]]; then
         echo "Start to download files used for bulk load function test"
         wget "https://github.com/XiaoMi/pegasus-common/releases/download/deps/pegasus-bulk-load-function-test-files.zip"
-        unzip "pegasus-bulk-load-function-test-files.zip" -d "$ROOT/src/test/function_test/bulk_load_test"
+        unzip "pegasus-bulk-load-function-test-files.zip" -d "$ROOT/src/test/function_test/bulk_load"
         rm "pegasus-bulk-load-function-test-files.zip"
         echo "Prepare files used for bulk load function test succeed"
     fi
@@ -410,31 +462,32 @@ function run_test()
           restore_test
           throttle_test
         )
-        if [[ "${need_onebox_tests[@]}" =~ "${test_modules}" ]]; then
+        if [[ "${need_onebox_tests[@]}" =~ "${module}" ]]; then
             run_clear_onebox
             m_count=3
-            if [ "${test_modules}" == "recovery_test" ]; then
+            if [ "${module}" == "recovery_test" ]; then
                 m_count=1
                 opts="meta_state_service_type=meta_state_service_simple,distributed_lock_service_type=distributed_lock_service_simple"
             fi
-            if [ "${test_modules}" == "backup_restore_test" ]; then
+            if [ "${module}" == "backup_restore_test" ]; then
                 opts="cold_backup_disabled=false,cold_backup_checkpoint_reserve_minutes=0,cold_backup_root=onebox"
             fi
-            if [ "${test_modules}" == "restore_test" ]; then
-                opts="cold_backup_disabled=false,cold_backup_checkpoint_reserve_minutes=0,cold_backup_root=mycluster"
+            if [ "${module}" == "restore_test" ]; then
+                opts="cold_backup_disabled=false,cold_backup_checkpoint_reserve_minutes=0,cold_backup_root=onebox"
             fi
+            [ -z ${onebox_opts} ] || opts="${opts},${onebox_opts}"
             if ! run_start_onebox -m ${m_count} -w -c --opts ${opts}; then
                 echo "ERROR: unable to continue on testing because starting onebox failed"
                 exit 1
             fi
             # TODO(yingchun): remove it?
-            sed -i "s/@LOCAL_HOSTNAME@/${LOCAL_HOSTNAME}/g"  $ROOT/src/builder/src/server/test/config.ini
+            sed -i "s/@LOCAL_HOSTNAME@/${LOCAL_HOSTNAME}/g"  ${BUILD_LATEST_DIR}/src/server/test/config.ini
         else
             run_stop_zk
             run_start_zk
         fi
-        pushd $ROOT/src/builder/bin/$module
-        REPORT_DIR=$REPORT_DIR TEST_BIN=$module ./run.sh
+        pushd ${BUILD_LATEST_DIR}/bin/${module}
+        REPORT_DIR=${REPORT_DIR} TEST_BIN=${module} TEST_OPTS=${test_opts} ./run.sh
         if [ $? != 0 ]; then
             echo "run test \"$module\" in `pwd` failed"
             exit 1
@@ -459,8 +512,8 @@ function run_test()
         mkdir -p "$ROOT/gcov_report"
 
         echo "Running gcovr to produce HTML code coverage report."
-        $BUILD_DIR
-        gcovr --html --html-details -r $ROOT --object-directory=$BUILD_DIR \
+        $BUILD_LATEST_DIR
+        gcovr --html --html-details -r $ROOT --object-directory=$BUILD_LATEST_DIR \
               -o $GCOV_DIR/index.html
         if [ $? -ne 0 ]; then
             exit 1
@@ -631,12 +684,14 @@ function usage_start_onebox()
     echo "   -w|--wait_healthy"
     echo "                     wait cluster to become healthy, default not wait"
     echo "   -s|--server_path <str>"
-    echo "                     server binary path, default is ${BUILD_DIR}/output/bin/pegasus_server"
+    echo "                     server binary path, default is ${BUILD_LATEST_DIR}/output/bin/pegasus_server"
     echo "   --config_path"
     echo "                     specify the config template path, default is ./src/server/config.min.ini in non-production env"
     echo "                                                                  ./src/server/config.ini in production env"
     echo "   --use_product_config"
     echo "                     use the product config template"
+    echo "   --hdfs_service_args"
+    echo "                     set the 'args' value of section '[block_service.hdfs_service]', it's a space separated HDFS namenode host:port and path string, for example: '127.0.0.1:8020 /pegasus'. Default is empty"
     echo "   --opts"
     echo "                     update configs before start onebox, the configs are in the form of 'key1=value1,key2=value2'"
 }
@@ -649,9 +704,10 @@ function run_start_onebox()
     APP_NAME=temp
     PARTITION_COUNT=8
     WAIT_HEALTHY=false
-    SERVER_PATH=${BUILD_DIR}/output/bin/pegasus_server
+    SERVER_PATH=${BUILD_LATEST_DIR}/output/bin/pegasus_server
     CONFIG_FILE=""
     USE_PRODUCT_CONFIG=false
+    HDFS_SERVICE_ARGS=""
     OPTS=""
 
     while [[ $# > 0 ]]; do
@@ -694,6 +750,11 @@ function run_start_onebox()
             --use_product_config)
                 USE_PRODUCT_CONFIG=true
                 ;;
+            --hdfs_service_args)
+                HDFS_SERVICE_ARGS="$2 $3"
+                shift
+                shift
+                ;;
             --opts)
                 OPTS="$2"
                 shift
@@ -723,6 +784,7 @@ function run_start_onebox()
         exit 1
     fi
 
+    source "${ROOT}"/scripts/config_hdfs.sh
     if [ $USE_PRODUCT_CONFIG == "true" ]; then
         [ -z "${CONFIG_FILE}" ] && CONFIG_FILE=${ROOT}/src/server/config.ini
         [ ! -f "${CONFIG_FILE}" ] && { echo "${CONFIG_FILE} is not exist"; exit 1; }
@@ -736,6 +798,7 @@ function run_start_onebox()
         sed -i 's/%{slog.dir}//g' ${ROOT}/config-server.ini
         sed -i 's/%{data.dirs}//g' ${ROOT}/config-server.ini
         sed -i 's@%{home.dir}@'"$HOME"'@g' ${ROOT}/config-server.ini
+        sed -i 's@%{hdfs_service_args}@'"${HDFS_SERVICE_ARGS}"'@g' ${ROOT}/config-server.ini
         for i in $(seq ${META_COUNT})
         do
             meta_port=$((34600+i))
@@ -965,6 +1028,7 @@ function run_start_onebox_instance()
         esac
         shift
     done
+    source "${ROOT}"/scripts/config_hdfs.sh
     if [ $META_ID = "0" -a $REPLICA_ID = "0" -a $COLLECTOR_ID = "0" ]; then
         echo "ERROR: no meta_id or replica_id or collector set"
         exit 1
@@ -1267,7 +1331,7 @@ s+@ONEBOX_RUN_PATH@+`pwd`+g" ${ROOT}/src/test/kill_test/config.ini >$CONFIG
 
     # start verifier
     mkdir -p onebox/verifier && cd onebox/verifier
-    ln -s -f ${BUILD_DIR}/output/bin/pegasus_kill_test/pegasus_kill_test
+    ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_kill_test/pegasus_kill_test
     ln -s -f ${ROOT}/$CONFIG config.ini
     echo "$PWD/pegasus_kill_test config.ini verifier &>/dev/null &"
     $PWD/pegasus_kill_test config.ini verifier &>/dev/null &
@@ -1278,7 +1342,7 @@ s+@ONEBOX_RUN_PATH@+`pwd`+g" ${ROOT}/src/test/kill_test/config.ini >$CONFIG
 
     #start killer
     mkdir -p onebox/killer && cd onebox/killer
-    ln -s -f ${BUILD_DIR}/output/bin/pegasus_kill_test/pegasus_kill_test
+    ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_kill_test/pegasus_kill_test
     ln -s -f ${ROOT}/$CONFIG config.ini
     echo "$PWD/pegasus_kill_test config.ini $KILLER_TYPE &>/dev/null &"
     $PWD/pegasus_kill_test config.ini $KILLER_TYPE &>/dev/null &
@@ -1503,9 +1567,9 @@ function run_bench()
         shift
     done
     cd ${ROOT}
-    cp ${BUILD_DIR}/output/bin/pegasus_bench/config.ini ./config-bench.ini
+    cp ${BUILD_LATEST_DIR}/output/bin/pegasus_bench/config.ini ./config-bench.ini
     fill_bench_config
-    ln -s -f ${BUILD_DIR}/output/bin/pegasus_bench/pegasus_bench
+    ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_bench/pegasus_bench
     ./pegasus_bench ./config-bench.ini
     rm -f ./config-bench.ini
 }
@@ -1632,11 +1696,14 @@ function run_shell()
     fi
 
     cd ${ROOT}
-    ln -s -f ${BUILD_DIR}/output/bin/pegasus_shell/pegasus_shell
+    ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_shell/pegasus_shell
     ./pegasus_shell ${CONFIG} $CLUSTER_NAME
     # because pegasus shell will catch 'Ctrl-C' signal, so the following commands will be executed
     # even user inputs 'Ctrl-C', so that the temporary config file will be cleared when exit shell.
-    rm -f ${CONFIG}
+    # however, if it is the specified config file, do not delete it.
+    if [ ${CONFIG_SPECIFIED} -eq 0 ]; then
+        rm -f ${CONFIG}
+    fi
 }
 
 #####################
@@ -1647,6 +1714,7 @@ function usage_migrate_node()
     echo "Options for subcommand 'migrate_node':"
     echo "   -h|--help            print the help info"
     echo "   -c|--cluster <str>   cluster meta lists"
+    echo "   -f|--config <str>    shell config path"
     echo "   -n|--node <str>      the node to migrate primary replicas out, should be ip:port"
     echo "   -a|--app <str>       the app to migrate primary replicas out, if not set, means migrate all apps"
     echo "   -t|--type <str>      type: test or run, default is test"
@@ -1655,6 +1723,7 @@ function usage_migrate_node()
 function run_migrate_node()
 {
     CLUSTER=""
+    CONFIG=""
     NODE=""
     APP="*"
     TYPE="test"
@@ -1667,6 +1736,10 @@ function run_migrate_node()
                 ;;
             -c|--cluster)
                 CLUSTER="$2"
+                shift
+                ;;
+            -f|--config)
+                CONFIG="$2"
                 shift
                 ;;
             -n|--node)
@@ -1691,7 +1764,7 @@ function run_migrate_node()
         shift
     done
 
-    if [ "$CLUSTER" == "" ]; then
+    if [ "$CLUSTER" == "" -a "$CONFIG" == "" ]; then
         echo "ERROR: no cluster specified"
         echo
         usage_migrate_node
@@ -1712,14 +1785,22 @@ function run_migrate_node()
         exit 1
     fi
 
-    echo "CLUSTER=$CLUSTER"
+    if [ "$CLUSTER" != "" ]; then
+        echo "CLUSTER=$CLUSTER"
+    else
+        echo "CONFIG=$CONFIG"
+    fi
     echo "NODE=$NODE"
     echo "APP=$APP"
     echo "TYPE=$TYPE"
     echo
     cd ${ROOT}
     echo "------------------------------"
-    ./scripts/migrate_node.sh $CLUSTER $NODE "$APP" $TYPE
+    if [ "$CLUSTER" != "" ]; then
+        ./scripts/migrate_node.sh $CLUSTER $NODE "$APP" $TYPE
+    else
+        ./scripts/migrate_node.sh $CONFIG $NODE "$APP" $TYPE -f
+    fi
     echo "------------------------------"
     echo
     if [ "$TYPE" == "test" ]; then
@@ -1741,6 +1822,7 @@ function usage_downgrade_node()
     echo "Options for subcommand 'downgrade_node':"
     echo "   -h|--help            print the help info"
     echo "   -c|--cluster <str>   cluster meta lists"
+    echo "   -f|--config <str>    config file path" 
     echo "   -n|--node <str>      the node to downgrade replicas, should be ip:port"
     echo "   -a|--app <str>       the app to downgrade replicas, if not set, means downgrade all apps"
     echo "   -t|--type <str>      type: test or run, default is test"
@@ -1749,6 +1831,7 @@ function usage_downgrade_node()
 function run_downgrade_node()
 {
     CLUSTER=""
+    CONFIG=""
     NODE=""
     APP="*"
     TYPE="test"
@@ -1761,6 +1844,10 @@ function run_downgrade_node()
                 ;;
             -c|--cluster)
                 CLUSTER="$2"
+                shift
+                ;;
+            -f|--config)
+                CONFIG="$2"
                 shift
                 ;;
             -n|--node)
@@ -1785,7 +1872,7 @@ function run_downgrade_node()
         shift
     done
 
-    if [ "$CLUSTER" == "" ]; then
+    if [ "$CLUSTER" == "" -a "$CONFIG" == "" ]; then
         echo "ERROR: no cluster specified"
         echo
         usage_downgrade_node
@@ -1806,14 +1893,22 @@ function run_downgrade_node()
         exit 1
     fi
 
-    echo "CLUSTER=$CLUSTER"
+    if [ "$CLUSTER" != "" ]; then
+        echo "CLUSTER=$CLUSTER"
+    else
+        echo "CONFIG=$CONFIG"
+    fi
     echo "NODE=$NODE"
     echo "APP=$APP"
     echo "TYPE=$TYPE"
     echo
     cd ${ROOT}
     echo "------------------------------"
-    ./scripts/downgrade_node.sh $CLUSTER $NODE "$APP" $TYPE
+    if [ "$CLUSTER" != "" ]; then
+        ./scripts/downgrade_node.sh $CLUSTER $NODE "$APP" $TYPE
+    else
+        ./scripts/downgrade_node.sh $CONFIG $NODE "$APP" $TYPE -f
+    fi
     echo "------------------------------"
     echo
     if [ "$TYPE" == "test" ]; then

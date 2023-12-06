@@ -15,16 +15,52 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "block_service/block_service.h"
-#include "utils/fmt_logging.h"
+#include <fmt/core.h>
+#include <rocksdb/env.h>
+#include <rocksdb/status.h>
+#include <functional>
+#include <memory>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "block_service/block_service_manager.h"
+#include "common/bulk_load_common.h"
+#include "common/gpid.h"
+#include "common/json_helper.h"
+#include "common/replication.codes.h"
+#include "common/replication_common.h"
+#include "common/replication_enums.h"
+#include "dsn.layer2_types.h"
+#include "perf_counter/perf_counter.h"
+#include "perf_counter/perf_counter_wrapper.h"
+#include "replica/disk_cleaner.h"
+#include "replica/mutation.h"
+#include "replica/replica_context.h"
+#include "replica/replica_stub.h"
 #include "replica/replication_app_base.h"
+#include "replica_bulk_loader.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_holder.h"
+#include "runtime/task/async_calls.h"
+#include "utils/autoref_ptr.h"
+#include "utils/blob.h"
+#include "utils/chrono_literals.h"
+#include "utils/env.h"
 #include "utils/fail_point.h"
 #include "utils/filesystem.h"
-
-#include "replica_bulk_loader.h"
-#include "replica/disk_cleaner.h"
+#include "utils/fmt_logging.h"
+#include "utils/ports.h"
+#include "absl/strings/string_view.h"
+#include "utils/thread_access_checker.h"
 
 namespace dsn {
+namespace dist {
+namespace block_service {
+class block_filesystem;
+} // namespace block_service
+} // namespace dist
+
 namespace replication {
 
 replica_bulk_loader::replica_bulk_loader(replica *r)
@@ -113,7 +149,7 @@ void replica_bulk_loader::broadcast_group_bulk_load(const bulk_load_request &met
         if (addr == _stub->_primary_address)
             continue;
 
-        auto request = make_unique<group_bulk_load_request>();
+        auto request = std::make_unique<group_bulk_load_request>();
         request->app_name = _replica->_app_info.app_name;
         request->target_address = addr;
         _replica->_primary_states.get_replica_config(partition_status::PS_SECONDARY,
@@ -406,7 +442,7 @@ void replica_bulk_loader::download_files(const std::string &provider_name,
                                          const std::string &remote_dir,
                                          const std::string &local_dir)
 {
-    FAIL_POINT_INJECT_F("replica_bulk_loader_download_files", [](string_view) {});
+    FAIL_POINT_INJECT_F("replica_bulk_loader_download_files", [](absl::string_view) {});
 
     LOG_INFO_PREFIX("start to download files");
     dist::block_service::block_filesystem *fs =
@@ -465,7 +501,8 @@ void replica_bulk_loader::download_sst_file(const std::string &remote_dir,
         // We are not sure if the file was cached by system. And we couldn't
         // afford the io overhead which is cased by reading file in verify_file(),
         // so if file exist we just verify file size
-        if (utils::filesystem::verify_file_size(file_name, f_meta.size)) {
+        if (utils::filesystem::verify_file_size(
+                file_name, utils::FileDataType::kSensitive, f_meta.size)) {
             // local file exist and is verified
             ec = ERR_OK;
             f_size = f_meta.size;
@@ -488,7 +525,8 @@ void replica_bulk_loader::download_sst_file(const std::string &remote_dir,
     if (ec == ERR_OK && !verified) {
         if (!f_meta.md5.empty() && f_md5 != f_meta.md5) {
             ec = ERR_CORRUPTION;
-        } else if (!utils::filesystem::verify_file_size(file_name, f_meta.size)) {
+        } else if (!utils::filesystem::verify_file_size(
+                       file_name, utils::FileDataType::kSensitive, f_meta.size)) {
             ec = ERR_CORRUPTION;
         }
     }
@@ -527,10 +565,11 @@ void replica_bulk_loader::download_sst_file(const std::string &remote_dir,
 error_code replica_bulk_loader::parse_bulk_load_metadata(const std::string &fname)
 {
     std::string buf;
-    error_code ec = utils::filesystem::read_file(fname, buf);
-    if (ec != ERR_OK) {
-        LOG_ERROR_PREFIX("read file {} failed, error = {}", fname, ec);
-        return ec;
+    auto s = rocksdb::ReadFileToString(
+        dsn::utils::PegasusEnv(dsn::utils::FileDataType::kSensitive), fname, &buf);
+    if (dsn_unlikely(!s.ok())) {
+        LOG_ERROR_PREFIX("read file {} failed, error = {}", fname, s.ToString());
+        return ERR_FILE_OPERATION_FAILED;
     }
 
     blob bb = blob::create_from_bytes(std::move(buf));

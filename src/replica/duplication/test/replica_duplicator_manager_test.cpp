@@ -15,7 +15,22 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "common/duplication_common.h"
+#include "common/gpid.h"
+#include "common/replication_other_types.h"
 #include "duplication_test_base.h"
+#include "duplication_types.h"
+#include "gtest/gtest.h"
+#include "replica/duplication/replica_duplicator.h"
+#include "replica/duplication/replica_duplicator_manager.h"
+#include "replica/test/mock_utils.h"
 
 namespace dsn {
 namespace replication {
@@ -23,7 +38,7 @@ namespace replication {
 class replica_duplicator_manager_test : public duplication_test_base
 {
 public:
-    void SetUp() override { stub = make_unique<mock_replica_stub>(); }
+    void SetUp() override { stub = std::make_unique<mock_replica_stub>(); }
 
     void TearDown() override { stub.reset(); }
 
@@ -99,7 +114,7 @@ public:
             ent.status = duplication_status::DS_PAUSE;
             ent.progress[r->get_gpid().get_partition_index()] = 0;
 
-            auto dup = make_unique<replica_duplicator>(ent, r);
+            auto dup = std::make_unique<replica_duplicator>(ent, r);
             dup->update_progress(dup->progress().set_last_decree(2).set_confirmed_decree(1));
             add_dup(r, std::move(dup));
         }
@@ -110,7 +125,7 @@ public:
             ent.status = duplication_status::DS_PAUSE;
             ent.progress[r->get_gpid().get_partition_index()] = 0;
 
-            auto dup = make_unique<replica_duplicator>(ent, r);
+            auto dup = std::make_unique<replica_duplicator>(ent, r);
             dup->update_progress(dup->progress().set_last_decree(1).set_confirmed_decree(1));
             add_dup(r, std::move(dup));
         }
@@ -135,7 +150,7 @@ public:
                 ent.status = duplication_status::DS_PAUSE;
                 ent.progress[r->get_gpid().get_partition_index()] = 0;
 
-                auto dup = make_unique<replica_duplicator>(ent, r);
+                auto dup = std::make_unique<replica_duplicator>(ent, r);
                 dup->update_progress(dup->progress()
                                          .set_last_decree(tt.confirmed_decree[id - 1])
                                          .set_confirmed_decree(tt.confirmed_decree[id - 1]));
@@ -167,24 +182,26 @@ public:
     }
 };
 
-TEST_F(replica_duplicator_manager_test, get_duplication_confirms)
+INSTANTIATE_TEST_CASE_P(, replica_duplicator_manager_test, ::testing::Values(false, true));
+
+TEST_P(replica_duplicator_manager_test, get_duplication_confirms)
 {
     test_get_duplication_confirms();
 }
 
-TEST_F(replica_duplicator_manager_test, set_confirmed_decree_non_primary)
+TEST_P(replica_duplicator_manager_test, set_confirmed_decree_non_primary)
 {
     test_set_confirmed_decree_non_primary();
 }
 
-TEST_F(replica_duplicator_manager_test, remove_non_existed_duplications)
+TEST_P(replica_duplicator_manager_test, remove_non_existed_duplications)
 {
     test_remove_non_existed_duplications();
 }
 
-TEST_F(replica_duplicator_manager_test, min_confirmed_decree) { test_min_confirmed_decree(); }
+TEST_P(replica_duplicator_manager_test, min_confirmed_decree) { test_min_confirmed_decree(); }
 
-TEST_F(replica_duplicator_manager_test, update_checkpoint_prepared)
+TEST_P(replica_duplicator_manager_test, update_checkpoint_prepared)
 {
     auto r = stub->add_primary_replica(2, 1);
     duplication_entry ent;
@@ -192,7 +209,7 @@ TEST_F(replica_duplicator_manager_test, update_checkpoint_prepared)
     ent.status = duplication_status::DS_PAUSE;
     ent.progress[r->get_gpid().get_partition_index()] = 0;
 
-    auto dup = make_unique<replica_duplicator>(ent, r);
+    auto dup = std::make_unique<replica_duplicator>(ent, r);
     r->update_last_durable_decree(100);
     dup->update_progress(dup->progress().set_last_decree(2).set_confirmed_decree(1));
     add_dup(r, std::move(dup));

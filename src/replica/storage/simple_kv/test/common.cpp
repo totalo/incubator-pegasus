@@ -24,22 +24,19 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     Replication testing framework.
- *
- * Revision history:
- *     Nov., 2015, @qinzuoyan (Zuoyan Qin), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #include "common.h"
-#include "checker.h"
 
-#include "utils/utils.h"
-
-#include <sstream>
+#include <boost/cstdint.hpp>
 #include <boost/lexical_cast.hpp>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <stddef.h>
+#include <sstream>
+
+#include "checker.h"
+#include "common/replication_enums.h"
+#include "dsn.layer2_types.h"
+#include "utils/fmt_logging.h"
+#include "utils/strings.h"
 
 namespace dsn {
 namespace replication {

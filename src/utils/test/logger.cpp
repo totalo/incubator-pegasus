@@ -24,12 +24,24 @@
  * THE SOFTWARE.
  */
 
-#include <gtest/gtest.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
 
+#include "gtest/gtest.h"
+#include "utils/api_utilities.h"
+#include "utils/error_code.h"
 #include "utils/filesystem.h"
+#include "utils/logging_provider.h"
+#include "utils/ports.h"
 #include "utils/safe_strerror_posix.h"
 #include "utils/simple_logger.h"
-#include "utils/smart_pointers.h"
 
 using std::vector;
 using std::string;
@@ -94,7 +106,7 @@ TEST(tools_common, simple_logger)
     dsn::logging_provider::instance()->deregister_commands();
 
     {
-        auto logger = dsn::make_unique<screen_logger>(true);
+        auto logger = std::make_unique<screen_logger>(true);
         log_print(logger.get(), "%s", "test_print");
         std::thread t([](screen_logger *lg) { log_print(lg, "%s", "test_print"); }, logger.get());
         t.join();
@@ -105,7 +117,7 @@ TEST(tools_common, simple_logger)
     prepare_test_dir();
     // create multiple files
     for (unsigned int i = 0; i < simple_logger_gc_gap + 10; ++i) {
-        auto logger = dsn::make_unique<simple_logger>("./");
+        auto logger = std::make_unique<simple_logger>("./");
         for (unsigned int i = 0; i != 1000; ++i) {
             log_print(logger.get(), "%s", "test_print");
         }

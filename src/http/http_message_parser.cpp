@@ -26,15 +26,18 @@
 
 #include "http_message_parser.h"
 
-#include <iomanip>
+#include <stdint.h>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <string.h>
+#include <utility>
+#include <vector>
 
-#include "http_server.h"
-#include "runtime/api_layer1.h"
+#include "http/http_method.h"
+#include "nodejs/http_parser.h"
 #include "runtime/rpc/rpc_message.h"
-#include "runtime/rpc/serialization.h"
+#include "utils/blob.h"
 #include "utils/crc.h"
 #include "utils/fmt_logging.h"
-#include "utils/ports.h"
 #include "utils/strings.h"
 
 namespace dsn {
@@ -130,13 +133,15 @@ http_message_parser::http_message_parser()
 
         message_header *header = msg->header;
         if (parser->type == HTTP_REQUEST && parser->method == HTTP_GET) {
-            header->hdr_type = http_method::HTTP_METHOD_GET;
+            header->hdr_type = static_cast<uint32_t>(http_method::GET);
             header->context.u.is_request = 1;
         } else if (parser->type == HTTP_REQUEST && parser->method == HTTP_POST) {
-            header->hdr_type = http_method::HTTP_METHOD_POST;
+            header->hdr_type = static_cast<uint32_t>(http_method::POST);
             header->context.u.is_request = 1;
         } else {
-            LOG_ERROR("invalid http type {} and method {}", parser->type, parser->method);
+            // Bit fields don't work with "perfect" forwarding, see
+            // https://github.com/fmtlib/fmt/issues/1284
+            LOG_ERROR("invalid http type {} and method {}", +parser->type, +parser->method);
             return 1;
         }
         return 0;

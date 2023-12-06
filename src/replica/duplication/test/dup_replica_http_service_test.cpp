@@ -15,8 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "replica/replica_http_service.h"
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
+#include <unordered_map>
+
+#include "common/gpid.h"
 #include "duplication_test_base.h"
+#include "duplication_types.h"
+#include "gtest/gtest.h"
+#include "http/http_server.h"
+#include "replica/duplication/replica_duplicator.h"
+#include "replica/replica_http_service.h"
+#include "replica/test/mock_utils.h"
 
 namespace dsn {
 namespace replication {
@@ -25,7 +37,9 @@ class dup_replica_http_service_test : public duplication_test_base
 {
 };
 
-TEST_F(dup_replica_http_service_test, query_duplication_handler)
+INSTANTIATE_TEST_CASE_P(, dup_replica_http_service_test, ::testing::Values(false, true));
+
+TEST_P(dup_replica_http_service_test, query_duplication_handler)
 {
     auto pri = stub->add_primary_replica(1, 1);
 
@@ -34,7 +48,7 @@ TEST_F(dup_replica_http_service_test, query_duplication_handler)
     ent.dupid = 1583306653;
     ent.progress[pri->get_gpid().get_partition_index()] = 0;
     ent.status = duplication_status::DS_PAUSE;
-    add_dup(pri, make_unique<replica_duplicator>(ent, pri));
+    add_dup(pri, std::make_unique<replica_duplicator>(ent, pri));
 
     replica_http_service http_svc(stub.get());
 

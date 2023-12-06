@@ -20,7 +20,6 @@ src/base/rrdb_types.cpp
 src/include/rrdb/rrdb_types.h
 src/common/serialization_helper/dsn.layer2_types.h
 src/runtime/dsn.layer2_types.cpp
-src/*builder
 
 onebox/
 .zk_install/
@@ -116,7 +115,7 @@ scripts/py_utils/*.pyc
 cmake-build-debug
 packages
 
-src/test/function_test/bulk_load_test/pegasus-bulk-load-function-test-files/
+src/test/function_test/bulk_load/pegasus-bulk-load-function-test-files/
 config-shell.ini.*
 *.tar.gz
 pegasus-server*

@@ -19,22 +19,39 @@
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "common//duplication_common.h"
+#include "common/common.h"
 #include "perf_counter/perf_counter_wrapper.h"
 #include "replica/replica_base.h"
-#include "common/common.h"
-#include "common//duplication_common.h"
-#include "meta_admin_types.h"
-#include "partition_split_types.h"
-#include "duplication_types.h"
-#include "bulk_load_types.h"
-#include "backup_types.h"
-#include "consensus_types.h"
-#include "replica_admin_types.h"
+#include "utils/errors.h"
 
-#include "base/pegasus_value_schema.h"
-#include "base/pegasus_utils.h"
-#include "rrdb/rrdb_types.h"
-#include "duplication_internal_types.h"
+namespace dsn {
+class blob;
+class perf_counter;
+namespace apps {
+class check_and_mutate_request;
+class check_and_mutate_response;
+class check_and_set_request;
+class check_and_set_response;
+class duplicate_request;
+class duplicate_response;
+class incr_request;
+class incr_response;
+class multi_put_request;
+class multi_remove_request;
+class multi_remove_response;
+class update_request;
+class update_response;
+} // namespace apps
+namespace replication {
+class ingestion_request;
+class ingestion_response;
+} // namespace replication
+} // namespace dsn
 
 namespace pegasus {
 namespace server {
@@ -101,8 +118,8 @@ struct db_write_context
     bool is_duplicated_write() const { return remote_timetag > 0; }
 };
 
-class pegasus_server_impl;
 class capacity_unit_calculator;
+class pegasus_server_impl;
 
 /// Handle the write requests.
 /// As the signatures imply, this class is not responsible for replying the rpc,
@@ -116,7 +133,7 @@ public:
     ~pegasus_write_service();
 
     // Write empty record.
-    // See this document (https://github.com/XiaoMi/pegasus/wiki/last_flushed_decree)
+    // See this document (https://pegasus.apache.org/zh/2018/03/07/last_flushed_decree.html)
     // to know why we must have empty write.
     int empty_put(int64_t decree);
 
@@ -159,20 +176,20 @@ public:
     void batch_prepare(int64_t decree);
 
     // Add PUT record in batch write.
-    // \returns 0 if success, non-0 if failure.
+    // \returns rocksdb::Status::Code.
     // NOTE that `resp` should not be moved or freed while the batch is not committed.
     int batch_put(const db_write_context &ctx,
                   const dsn::apps::update_request &update,
                   dsn::apps::update_response &resp);
 
     // Add REMOVE record in batch write.
-    // \returns 0 if success, non-0 if failure.
+    // \returns rocksdb::Status::Code.
     // NOTE that `resp` should not be moved or freed while the batch is not committed.
     int batch_remove(int64_t decree, const dsn::blob &key, dsn::apps::update_response &resp);
 
     // Commit batch write.
-    // \returns 0 if success, non-0 if failure.
-    // NOTE that if the batch contains no updates, 0 is returned.
+    // \returns rocksdb::Status::Code.
+    // NOTE that if the batch contains no updates, rocksdb::Status::kOk is returned.
     int batch_commit(int64_t decree);
 
     // Abort batch write.
@@ -192,6 +209,7 @@ private:
     pegasus_server_impl *_server;
 
     class impl;
+
     std::unique_ptr<impl> _impl;
 
     uint64_t _batch_start_time;

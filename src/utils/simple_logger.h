@@ -26,10 +26,13 @@
 
 #pragma once
 
+#include <stdarg.h>
 #include <cstdio>
-#include <thread>
+#include <string>
 
-#include "runtime/tool_api.h"
+#include "utils/api_utilities.h"
+#include "utils/logging_provider.h"
+#include "utils/synchronize.h"
 
 namespace dsn {
 namespace tools {
@@ -43,18 +46,20 @@ public:
     explicit screen_logger(bool short_header);
     ~screen_logger() override;
 
-    virtual void dsn_logv(const char *file,
-                          const char *function,
-                          const int line,
-                          dsn_log_level_t log_level,
-                          const char *fmt,
-                          va_list args);
+    void dsn_logv(const char *file,
+                  const char *function,
+                  const int line,
+                  dsn_log_level_t log_level,
+                  const char *fmt,
+                  va_list args) override;
 
-    virtual void dsn_log(const char *file,
-                         const char *function,
-                         const int line,
-                         dsn_log_level_t log_level,
-                         const char *str){};
+    void dsn_log(const char *file,
+                 const char *function,
+                 const int line,
+                 dsn_log_level_t log_level,
+                 const char *str) override
+    {
+    }
 
     virtual void flush();
 

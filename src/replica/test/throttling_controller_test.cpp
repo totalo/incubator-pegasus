@@ -17,7 +17,7 @@
 
 #include "utils/throttling_controller.h"
 
-#include <gtest/gtest.h>
+#include "gtest/gtest.h"
 
 namespace dsn {
 namespace replication {

@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <arpa/inet.h>
-#include <gtest/gtest.h>
+#include <netinet/in.h>
+#include <string>
 
+#include "gtest/gtest.h"
 #include "runtime/rpc/rpc_address.h"
 #include "utils/utils.h"
 

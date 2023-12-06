@@ -25,7 +25,11 @@
  */
 
 #include "common//duplication_common.h"
-#include <gtest/gtest.h>
+
+#include <cstdint>
+
+#include "gtest/gtest.h"
+#include "utils/error_code.h"
 
 namespace dsn {
 namespace replication {

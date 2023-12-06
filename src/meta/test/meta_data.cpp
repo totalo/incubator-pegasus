@@ -24,9 +24,18 @@
  * THE SOFTWARE.
  */
 
-#include <gtest/gtest.h>
-#include "misc/misc.h"
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "client/partition_resolver.h"
+#include "common/gpid.h"
+#include "dsn.layer2_types.h"
+#include "gtest/gtest.h"
 #include "meta/meta_data.h"
+#include "metadata_types.h"
+#include "misc/misc.h"
+#include "runtime/rpc/rpc_address.h"
 
 using namespace dsn::replication;
 

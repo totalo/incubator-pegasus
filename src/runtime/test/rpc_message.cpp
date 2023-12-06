@@ -24,19 +24,26 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     Unit-test for rpc_message.
- *
- * Revision history:
- *     Nov., 2015, @qinzuoyan (Zuoyan Qin), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
+#include <stdint.h>
+#include <string.h>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "common/gpid.h"
+#include "dsn.layer2_types.h"
+#include "gtest/gtest.h"
 #include "runtime/message_utils.cpp"
-#include "utils/crc.h"
+#include "runtime/message_utils.h"
+#include "runtime/rpc/rpc_address.h"
 #include "runtime/rpc/rpc_message.h"
-#include <gtest/gtest.h>
+#include "runtime/rpc/serialization.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_spec.h"
+#include "utils/autoref_ptr.h"
+#include "utils/blob.h"
+#include "utils/crc.h"
+#include "utils/threadpool_code.h"
 
 using namespace ::dsn;
 

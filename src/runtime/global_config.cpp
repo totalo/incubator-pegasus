@@ -24,26 +24,19 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     configuration of rDSN
- *
- * Revision history:
- *     Mar., 2015, @imzhenyu (Zhenyu Guo), first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
-#include <thread>
-
-#include "utils/singleton_store.h"
-#include "utils/filesystem.h"
-#include "utils/config_api.h"
-#include "utils/flags.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <algorithm>
+#include <utility>
 
 #include "runtime/global_config.h"
-#include "runtime/task/task_spec.h"
-#include "runtime/rpc/network.h"
 #include "runtime/service_app.h"
+#include "runtime/task/task_spec.h"
+#include "utils/config_api.h"
+#include "utils/filesystem.h"
+#include "utils/fmt_logging.h"
+#include "utils/strings.h"
 
 namespace dsn {
 

@@ -26,23 +26,22 @@
 
 #pragma once
 
-#include "utils/smart_pointers.h"
-#include "replica/replication_app_base.h"
-#include "utils/filesystem.h"
-#include "utils/errors.h"
 #include <gtest/gtest.h>
 
-#include "replica/replica_stub.h"
-
 #include "mock_utils.h"
+#include "replica/replication_app_base.h"
+#include "replica/replica_stub.h"
+#include "test_util/test_util.h"
+#include "utils/errors.h"
+#include "utils/filesystem.h"
 
 namespace dsn {
 namespace replication {
 
-class replica_stub_test_base : public ::testing::Test
+class replica_stub_test_base : public pegasus::encrypt_data_test_base
 {
 public:
-    replica_stub_test_base() { stub = make_unique<mock_replica_stub>(); }
+    replica_stub_test_base() { stub = std::make_unique<mock_replica_stub>(); }
 
     ~replica_stub_test_base() { stub.reset(); }
 
@@ -53,9 +52,14 @@ class replica_test_base : public replica_stub_test_base
 {
 public:
     std::unique_ptr<mock_replica> _replica;
-    const std::string _log_dir{"./test-log"};
+    // TODO(yingchun): rename to _replica_dir, and consider to remove it totally.
+    std::string _log_dir;
 
-    replica_test_base() { _replica = create_mock_replica(stub.get(), 1, 1, _log_dir.c_str()); }
+    replica_test_base()
+    {
+        _replica = create_mock_replica(stub.get(), 1, 1);
+        _log_dir = _replica->dir();
+    }
 
     virtual mutation_ptr create_test_mutation(int64_t decree, const std::string &data)
     {

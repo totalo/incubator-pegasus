@@ -147,6 +147,7 @@ function(dsn_add_project)
   endif()
   ms_add_project("${MY_PROJ_TYPE}" "${MY_PROJ_NAME}" "${MY_PROJ_SRC}" "${MY_PROJ_LIBS}" "${MY_BINPLACES}")
   define_file_basename_for_sources(${MY_PROJ_NAME})
+  target_compile_features(${MY_PROJ_NAME} PRIVATE cxx_std_17)
 endfunction(dsn_add_project)
 
 function(dsn_add_static_library)
@@ -204,7 +205,7 @@ function(dsn_setup_compiler_flags)
   # We want access to the PRI* print format macros.
   add_definitions(-D__STDC_FORMAT_MACROS)
 
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++1y -gdwarf-4" CACHE STRING "" FORCE)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -gdwarf-4" CACHE STRING "" FORCE)
 
   #  -Wall: Enable all warnings.
   add_compile_options(-Wall)
@@ -221,12 +222,6 @@ function(dsn_setup_compiler_flags)
   #   use frame pointers to allow simple stack frame walking for backtraces.
   #   This has a small perf hit but worth it for the ability to profile in production
   add_compile_options( -fno-omit-frame-pointer)
-  # -Wno-deprecated-register
-  #   kbr5.h uses the legacy 'register' keyword.
-  add_compile_options(-Wno-deprecated-register)
-  # -Wno-implicit-float-conversion
-  #   Poco/Dynamic/VarHolder.h uses 'unsigned long' to 'float' conversion
-  add_compile_options(-Wno-implicit-float-conversion)
 
   find_program(CCACHE_FOUND ccache)
   if(CCACHE_FOUND)
@@ -321,7 +316,7 @@ function(dsn_setup_thirdparty_libs)
 
   set(CMAKE_PREFIX_PATH ${THIRDPARTY_INSTALL_DIR};${CMAKE_PREFIX_PATH})
   message(STATUS "CMAKE_PREFIX_PATH = ${CMAKE_PREFIX_PATH}")
-  find_package(Boost COMPONENTS system filesystem regex REQUIRED)
+  find_package(Boost COMPONENTS system filesystem REQUIRED)
   include_directories(${Boost_INCLUDE_DIRS})
 
   find_library(THRIFT_LIB NAMES libthrift.a PATHS ${THIRDPARTY_INSTALL_DIR}/lib NO_DEFAULT_PATH)
@@ -350,15 +345,17 @@ function(dsn_setup_thirdparty_libs)
   message (STATUS "JAVA_JVM_LIBRARY=${JAVA_JVM_LIBRARY}")
   link_libraries(${JAVA_JVM_LIBRARY})
 
+  find_package(OpenSSL REQUIRED)
+  include_directories(${OPENSSL_INCLUDE_DIR})
+  link_libraries(${OPENSSL_CRYPTO_LIBRARY})
+  link_libraries(${OPENSSL_SSL_LIBRARY})
+
+  # abseil
+  find_package(absl REQUIRED)
+
   link_directories(${THIRDPARTY_INSTALL_DIR}/lib)
   if (NOT APPLE)
     link_directories(${THIRDPARTY_INSTALL_DIR}/lib64)
-  endif()
-
-  if (APPLE)
-    include_directories(SYSTEM ${MACOS_OPENSSL_ROOT_DIR}/include)
-    link_directories(${MACOS_OPENSSL_ROOT_DIR}/lib)
-    message (STATUS "MACOS_OPENSSL_ROOT_DIR: ${MACOS_OPENSSL_ROOT_DIR}")
   endif()
 endfunction(dsn_setup_thirdparty_libs)
 
@@ -388,11 +385,9 @@ function(dsn_common_setup)
 
   set(BUILD_SHARED_LIBS OFF)
 
-  include(CheckCXXCompilerFlag)
-  CHECK_CXX_COMPILER_FLAG("-std=c++1y" COMPILER_SUPPORTS_CXX1Y)
-  if(NOT ${COMPILER_SUPPORTS_CXX1Y})
-    message(FATAL_ERROR "You need a compiler with C++1y support.")
-  endif()
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  set(CMAKE_CXX_EXTENSIONS OFF)
 
   dsn_setup_system_libs()
   dsn_setup_compiler_flags()

@@ -34,10 +34,10 @@ class duplication_test_base : public replica_test_base
 public:
     duplication_test_base()
     {
-        mutation_duplicator::creator = [](replica_base *r, dsn::string_view, dsn::string_view) {
-            return make_unique<mock_mutation_duplicator>(r);
+        mutation_duplicator::creator = [](replica_base *r, absl::string_view, absl::string_view) {
+            return std::make_unique<mock_mutation_duplicator>(r);
         };
-        stub->_duplication_sync_timer = make_unique<duplication_sync_timer>(stub.get());
+        stub->_duplication_sync_timer = std::make_unique<duplication_sync_timer>(stub.get());
     }
 
     void add_dup(mock_replica *r, replica_duplicator_u_ptr dup)
@@ -63,14 +63,14 @@ public:
         dup_ent.status = duplication_status::DS_PAUSE;
         dup_ent.progress[_replica->get_gpid().get_partition_index()] = confirmed;
 
-        auto duplicator = make_unique<replica_duplicator>(dup_ent, _replica.get());
+        auto duplicator = std::make_unique<replica_duplicator>(dup_ent, _replica.get());
         duplicator->_start_point_decree = start;
         return duplicator;
     }
 
-    std::map<int, log_file_ptr> open_log_file_map(const std::string &log_dir)
+    mutation_log::log_file_map_by_index open_log_file_map(const std::string &log_dir)
     {
-        std::map<int, log_file_ptr> log_file_map;
+        mutation_log::log_file_map_by_index log_file_map;
         error_s err = log_utils::open_log_file_map(log_dir, log_file_map);
         EXPECT_EQ(err, error_s::ok());
         return log_file_map;

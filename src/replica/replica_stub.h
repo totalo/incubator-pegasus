@@ -26,26 +26,66 @@
 
 #pragma once
 
-//
-// the replica_stub is the *singleton* entry to
-// access all replica managed in the same process
-//   replica_stub(singleton) --> replica --> replication_app_base
-//
-
+#include <gtest/gtest_prod.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <atomic>
 #include <functional>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
 #include <tuple>
-#include "perf_counter/perf_counter_wrapper.h"
-#include "failure_detector/failure_detector_multimaster.h"
-#include "nfs/nfs_node.h"
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
-#include "common/replication_common.h"
+#include "block_service/block_service_manager.h"
+#include "bulk_load_types.h"
 #include "common/bulk_load_common.h"
 #include "common/fs_manager.h"
-#include "block_service/block_service_manager.h"
+#include "common/gpid.h"
+#include "common/replication_common.h"
+#include "common/replication_other_types.h"
+#include "consensus_types.h"
+#include "dsn.layer2_types.h"
+#include "failure_detector/failure_detector_multimaster.h"
+#include "metadata_types.h"
+#include "partition_split_types.h"
+#include "perf_counter/perf_counter_wrapper.h"
 #include "replica.h"
+#include "replica/mutation_log.h"
+#include "replica_admin_types.h"
+#include "runtime/ranger/access_type.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_holder.h"
+#include "runtime/security/access_controller.h"
+#include "runtime/serverlet.h"
+#include "runtime/task/task.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_tracker.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/flags.h"
+#include "utils/fmt_utils.h"
+#include "utils/zlocks.h"
 
 namespace dsn {
+class command_deregister;
+class message_ex;
+class nfs_node;
+
+namespace service {
+class copy_request;
+class copy_response;
+class get_file_size_request;
+class get_file_size_response;
+} // namespace service
+
 namespace replication {
+class configuration_query_by_node_response;
+class configuration_update_request;
+class potential_secondary_context;
 
 DSN_DECLARE_uint32(max_concurrent_manual_emergency_checkpointing_count);
 
@@ -65,7 +105,6 @@ typedef rpc_holder<group_bulk_load_request, group_bulk_load_response> group_bulk
 typedef rpc_holder<detect_hotkey_request, detect_hotkey_response> detect_hotkey_rpc;
 typedef rpc_holder<add_new_disk_request, add_new_disk_response> add_new_disk_rpc;
 
-class mutation_log;
 namespace test {
 class test_checker;
 }
@@ -78,13 +117,14 @@ typedef std::function<void(
     replica_state_subscriber;
 
 class replica_stub;
+
 typedef dsn::ref_ptr<replica_stub> replica_stub_ptr;
 
 class duplication_sync_timer;
-class replica_bulk_loader;
 class replica_backup_server;
-class replica_split_manager;
 
+// The replica_stub is the *singleton* entry to access all replica managed in the same process
+//   replica_stub(singleton) --> replica --> replication_app_base
 class replica_stub : public serverlet<replica_stub>, public ref_counter
 {
 public:
@@ -99,8 +139,6 @@ public:
     //
     void initialize(const replication_options &opts, bool clear = false);
     void initialize(bool clear = false);
-    void initialize_fs_manager(std::vector<std::string> &data_dirs,
-                               std::vector<std::string> &data_dir_tags);
     void set_options(const replication_options &opts) { _options = opts; }
     void open_service();
     void close();
@@ -161,12 +199,6 @@ public:
     bool is_connected() const { return NS_Connected == _state; }
     virtual rpc_address get_meta_server_address() const { return _failure_detector->get_servers(); }
     rpc_address primary_address() const { return _primary_address; }
-
-    std::string get_replica_dir(const char *app_type, gpid id, bool create_new = true);
-
-    // during partition split, we should gurantee child replica and parent replica share the
-    // same data dir
-    std::string get_child_dir(const char *app_type, gpid child_pid, const std::string &parent_dir);
 
     //
     // helper methods
@@ -232,6 +264,41 @@ public:
 
     void update_config(const std::string &name);
 
+    fs_manager *get_fs_manager() { return &_fs_manager; }
+
+    template <typename TReqType, typename TRespType>
+    bool check_status_and_authz_with_reply(const TReqType &request,
+                                           ::dsn::rpc_replier<TRespType> &reply,
+                                           const ::dsn::ranger::access_type &ac_type) const
+    {
+        if (!_access_controller->is_enable_ranger_acl()) {
+            return true;
+        }
+        const auto &pid = request.pid;
+        replica_ptr rep = get_replica(pid);
+
+        if (!rep) {
+            TRespType resp;
+            resp.error = ERR_OBJECT_NOT_FOUND;
+            reply(resp);
+            return false;
+        }
+        dsn::message_ex *msg = reply.response_message();
+        if (!rep->access_controller_allowed(msg, ac_type)) {
+            TRespType resp;
+            resp.error = ERR_ACL_DENY;
+            reply(resp);
+            return false;
+        }
+        return true;
+    }
+
+    void on_nfs_copy(const ::dsn::service::copy_request &request,
+                     ::dsn::rpc_replier<::dsn::service::copy_response> &reply);
+
+    void on_nfs_get_file_size(const ::dsn::service::get_file_size_request &request,
+                              ::dsn::rpc_replier<::dsn::service::get_file_size_response> &reply);
+
 private:
     enum replica_node_state
     {
@@ -239,6 +306,7 @@ private:
         NS_Connecting,
         NS_Connected
     };
+    friend USER_DEFINED_ENUM_FORMATTER(replica_stub::replica_node_state);
 
     enum replica_life_cycle
     {
@@ -265,6 +333,17 @@ private:
                       gpid id,
                       const std::shared_ptr<group_check_request> &req,
                       const std::shared_ptr<configuration_update_request> &req2);
+    // Create a new replica according to the parameters.
+    // 'parent_dir' is used in partition split for create_child_replica_dir().
+    replica *new_replica(gpid gpid,
+                         const app_info &app,
+                         bool restore_if_necessary,
+                         bool is_duplication_follower,
+                         const std::string &parent_dir = "");
+    // Load an existing replica which is located in 'dn' with 'dir' directory.
+    replica *load_replica(dir_node *dn, const char *dir);
+    // Clean up the memory state and on disk data if creating replica failed.
+    void clear_on_failure(replica *rep);
     task_ptr begin_close_replica(replica_ptr r);
     void close_replica(replica_ptr r);
     void notify_replica_state_update(const replica_configuration &config, bool is_closing);
@@ -279,14 +358,36 @@ private:
     replica_life_cycle get_replica_life_cycle(gpid id);
     void on_gc_replica(replica_stub_ptr this_, gpid id);
 
+    struct replica_gc_info
+    {
+        replica_ptr rep;
+        partition_status::type status;
+        mutation_log_ptr plog;
+        decree last_durable_decree;
+        int64_t init_offset_in_shared_log;
+    };
+    using replica_gc_info_map = std::unordered_map<gpid, replica_gc_info>;
+
+    // Try to remove obsolete files of shared log for garbage collection according to the provided
+    // states of all replicas. The purpose is to remove all of the files of shared log, since it
+    // has been deprecated, and would not be appended any more.
+    void gc_slog(const replica_gc_info_map &replica_gc_map);
+
+    // The number of flushed replicas for the garbage collection of shared log at a time should be
+    // limited.
+    void limit_flush_replicas_for_slog_gc(size_t prevent_gc_replica_count);
+
+    // Flush rocksdb data to sst files for replicas to facilitate garbage collection of more files
+    // of shared log.
+    void flush_replicas_for_slog_gc(const replica_gc_info_map &replica_gc_map,
+                                    const std::set<gpid> &prevent_gc_replicas);
+
     void response_client(gpid id,
                          bool is_read,
                          dsn::message_ex *request,
                          partition_status::type status,
                          error_code error);
     void update_disk_holding_replicas();
-
-    void update_disks_status();
 
     void register_ctrl_command();
 
@@ -313,6 +414,9 @@ private:
     void register_jemalloc_ctrl_command();
 #endif
 
+    // Wait all replicas in closing state to be finished.
+    void wait_closing_replicas_finished();
+
 private:
     friend class ::dsn::replication::test::test_checker;
     friend class ::dsn::replication::replica;
@@ -324,7 +428,6 @@ private:
     friend class replica_bulk_loader;
     friend class replica_split_manager;
     friend class replica_disk_migrator;
-
     friend class mock_replica_stub;
     friend class duplication_sync_timer;
     friend class duplication_sync_timer_test;
@@ -338,6 +441,10 @@ private:
     friend class replica_follower;
     friend class replica_follower_test;
     friend class replica_http_service_test;
+    FRIEND_TEST(open_replica_test, open_replica_add_decree_and_ballot_check);
+    FRIEND_TEST(replica_test, test_auto_trash_of_corruption);
+    FRIEND_TEST(replica_test, test_clear_on_failure);
+    FRIEND_TEST(GcSlogFlushFeplicasTest, FlushReplicas);
 
     typedef std::unordered_map<gpid, ::dsn::task_ptr> opening_replicas;
     typedef std::unordered_map<gpid, std::tuple<task_ptr, replica_ptr, app_info, replica_info>>
@@ -350,6 +457,15 @@ private:
     opening_replicas _opening_replicas;
     closing_replicas _closing_replicas;
     closed_replicas _closed_replicas;
+
+    // The number of replicas that prevent slog files from being removed for gc at the last round.
+    size_t _last_prevent_gc_replica_count;
+
+    // The real limit of flushed replicas for the garbage collection of shared log.
+    size_t _real_log_shared_gc_flush_replicas_limit;
+
+    // The number of flushed replicas, mocked only for test.
+    size_t _mock_flush_replicas_for_test;
 
     mutation_log_ptr _log;
     ::dsn::rpc_address _primary_address;
@@ -405,6 +521,8 @@ private:
     std::atomic_int _manual_emergency_checkpointing_count;
 
     bool _is_running;
+
+    std::unique_ptr<dsn::security::access_controller> _access_controller;
 
 #ifdef DSN_ENABLE_GPERF
     std::atomic_bool _is_releasing_memory{false};

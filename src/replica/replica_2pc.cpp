@@ -24,16 +24,60 @@
  * THE SOFTWARE.
  */
 
-#include "replica.h"
+#include <fmt/core.h>
+#include <inttypes.h>
+#include <stddef.h>
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "bulk_load/replica_bulk_loader.h"
+#include "bulk_load_types.h"
+#include "common/fs_manager.h"
+#include "common/gpid.h"
+#include "common/replication.codes.h"
+#include "common/replication_common.h"
+#include "common/replication_enums.h"
+#include "common/replication_other_types.h"
+#include "consensus_types.h"
+#include "dsn.layer2_types.h"
+#include "metadata_types.h"
 #include "mutation.h"
 #include "mutation_log.h"
-#include "replica_stub.h"
-#include "bulk_load/replica_bulk_loader.h"
-#include "split/replica_split_manager.h"
-#include "runtime/security/access_controller.h"
-#include "utils/latency_tracer.h"
+#include "perf_counter/perf_counter.h"
+#include "perf_counter/perf_counter_wrapper.h"
+#include "replica.h"
+#include "replica/prepare_list.h"
+#include "replica/replica_context.h"
 #include "replica/replication_app_base.h"
+#include "replica_stub.h"
+#include "runtime/api_layer1.h"
+#include "runtime/ranger/access_type.h"
+#include "runtime/rpc/network.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/rpc_message.h"
+#include "runtime/rpc/rpc_stream.h"
+#include "runtime/rpc/serialization.h"
+#include "runtime/security/access_controller.h"
+#include "runtime/task/async_calls.h"
+#include "runtime/task/task.h"
+#include "runtime/task/task_code.h"
+#include "runtime/task/task_spec.h"
+#include "split/replica_split_manager.h"
+#include "utils/api_utilities.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/flags.h"
 #include "utils/fmt_logging.h"
+#include "utils/latency_tracer.h"
+#include "utils/ports.h"
+#include "utils/thread_access_checker.h"
+#include "utils/uniq_timestamp_us.h"
 
 namespace dsn {
 namespace replication {
@@ -77,7 +121,7 @@ void replica::on_client_write(dsn::message_ex *request, bool ignore_throttling)
 {
     _checker.only_one_thread_access();
 
-    if (!_access_controller->allowed(request)) {
+    if (!_access_controller->allowed(request, ranger::access_type::kWrite)) {
         response_client_write(request, ERR_ACL_DENY);
         return;
     }
@@ -136,8 +180,8 @@ void replica::on_client_write(dsn::message_ex *request, bool ignore_throttling)
     }
 
     if (FLAGS_reject_write_when_disk_insufficient &&
-        (disk_space_insufficient() || _primary_states.secondary_disk_space_insufficient())) {
-        response_client_write(request, ERR_DISK_INSUFFICIENT);
+        (_dir_node->status != disk_status::NORMAL || _primary_states.secondary_disk_abnormal())) {
+        response_client_write(request, disk_status_to_error_code(_dir_node->status));
         return;
     }
 
@@ -215,11 +259,7 @@ void replica::init_prepare(mutation_ptr &mu, bool reconciliation, bool pop_all_c
     }
 
     mu->_tracer->set_name(fmt::format("mutation[{}]", mu->name()));
-    dlog(level,
-         "%s: mutation %s init_prepare, mutation_tid=%" PRIu64,
-         name(),
-         mu->name(),
-         mu->tid());
+    dlog_f(level, "{}: mutation {} init_prepare, mutation_tid={}", name(), mu->name(), mu->tid());
 
     // child should prepare mutation synchronously
     mu->set_is_sync_to_child(_primary_states.sync_send_write_request);

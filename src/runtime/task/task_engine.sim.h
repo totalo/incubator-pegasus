@@ -24,23 +24,21 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
-#include "utils/priority_queue.h"
-#include "timer_service.h"
+#include <stdint.h>
+#include <list>
+#include <map>
+
 #include "task_queue.h"
+#include "timer_service.h"
 #include "utils/zlock_provider.h"
 
 namespace dsn {
+class service_node;
+class task;
+class task_worker_pool;
+
 namespace tools {
 
 class sim_timer_service : public timer_service
@@ -72,6 +70,7 @@ private:
 };
 
 struct sim_worker_state;
+
 class sim_semaphore_provider : public semaphore_provider
 {
 public:

@@ -19,10 +19,13 @@
 
 #pragma once
 
+#include <sstream>
+
 #include "utils/api_utilities.h"
 #include "utils/fmt_logging.h"
 #include "utils/rand.h"
 #include "utils/strings.h"
+#include "utils/process_utils.h"
 
 #define RETRY_OPERATION(CLIENT_FUNCTION, RESULT)                                                   \
     do {                                                                                           \
@@ -203,14 +206,24 @@ inline void compare(const T &expect, const U &actual)
     }
 }
 
-inline void run_cmd(const std::string &cmd, std::string *output = nullptr)
+inline int run_cmd(const std::string &cmd, std::string *output = nullptr)
 {
     std::stringstream ss;
     int ret = dsn::utils::pipe_execute(cmd.c_str(), ss);
-    ASSERT_TRUE(ret == 0 || ret == 256) << "ret: " << ret << std::endl
-                                        << "cmd: " << cmd << std::endl
-                                        << "output: " << ss.str();
     if (output) {
         *output = dsn::utils::trim_string((char *)ss.str().c_str());
+    }
+    return ret;
+}
+
+inline void run_cmd_no_error(const std::string &cmd, std::string *output = nullptr)
+{
+    std::string tmp;
+    int ret = run_cmd(cmd, &tmp);
+    ASSERT_TRUE(ret == 0 || ret == 256) << "ret: " << ret << std::endl
+                                        << "cmd: " << cmd << std::endl
+                                        << "output: " << tmp;
+    if (output) {
+        *output = tmp;
     }
 }

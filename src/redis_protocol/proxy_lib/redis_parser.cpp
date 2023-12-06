@@ -19,18 +19,35 @@
 
 #include "redis_parser.h"
 
-#include <rocksdb/status.h>
-
+#include <ctype.h>
+// IWYU pragma: no_include <ext/alloc_traits.h>
+#include <fmt/core.h>
 #include <pegasus/error.h>
 #include <pegasus_key_schema.h>
 #include <pegasus_utils.h>
+#include <rocksdb/status.h>
 #include <rrdb/rrdb.client.h>
+#include <string.h>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 
 #include "base/pegasus_const.h"
 #include "common/replication_other_types.h"
+#include "pegasus/client.h"
+#include "rrdb/rrdb_types.h"
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/rpc/serialization.h"
+#include "utils/api_utilities.h"
+#include "utils/binary_writer.h"
+#include "utils/error_code.h"
 #include "utils/fmt_logging.h"
+#include "utils/ports.h"
 #include "utils/string_conv.h"
+#include "absl/strings/string_view.h"
 #include "utils/strings.h"
+#include "utils/utils.h"
 
 namespace pegasus {
 namespace proxy {
@@ -84,7 +101,7 @@ redis_parser::redis_parser(proxy_stub *op, dsn::message_ex *first_msg)
             meta_list, PEGASUS_CLUSTER_SECTION_NAME.c_str(), op->get_cluster());
         r = new ::dsn::apps::rrdb_client(op->get_cluster(), meta_list, op->get_app());
         if (!dsn::utils::is_empty(op->get_geo_app())) {
-            _geo_client = dsn::make_unique<geo::geo_client>(
+            _geo_client = std::make_unique<geo::geo_client>(
                 "config.ini", op->get_cluster(), op->get_app(), op->get_geo_app());
         }
     } else {
@@ -189,7 +206,7 @@ void redis_parser::eat_all(char *dest, size_t length)
 bool redis_parser::end_array_size()
 {
     int32_t count = 0;
-    if (dsn_unlikely(!dsn::buf2int32(dsn::string_view(_current_size), count))) {
+    if (dsn_unlikely(!dsn::buf2int32(absl::string_view(_current_size), count))) {
         LOG_ERROR(
             "{}: invalid size string \"{}\"", _remote_address.to_string(), _current_size.c_str());
         return false;
@@ -227,8 +244,7 @@ void redis_parser::append_current_bulk_string()
 bool redis_parser::end_bulk_string_size()
 {
     int32_t length = 0;
-    if (dsn_unlikely(!dsn::buf2int32(
-            dsn::string_view(_current_size.c_str(), _current_size.length()), length))) {
+    if (dsn_unlikely(!dsn::buf2int32(absl::string_view(_current_size), length))) {
         LOG_ERROR(
             "{}: invalid size string \"{}\"", _remote_address.to_string(), _current_size.c_str());
         return false;
@@ -528,9 +544,8 @@ void redis_parser::setex(message_entry &entry)
         simple_error_reply(entry, "wrong number of arguments for 'setex' command");
     } else {
         LOG_DEBUG_PREFIX("send SETEX command seqid({})", entry.sequence_id);
-        ::dsn::blob &ttl_blob = redis_req.sub_requests[2].data;
         int ttl_seconds;
-        if (!dsn::buf2int32(ttl_blob, ttl_seconds)) {
+        if (!dsn::buf2int32(redis_req.sub_requests[2].data.to_string_view(), ttl_seconds)) {
             simple_error_reply(entry, "value is not an integer or out of range");
             return;
         }
@@ -790,14 +805,16 @@ void redis_parser::geo_radius(message_entry &entry)
     // longitude latitude
     double lng_degrees = 0.0;
     const std::string &str_lng_degrees = redis_request.sub_requests[2].data.to_string();
-    if (!dsn::buf2double(str_lng_degrees, lng_degrees)) {
-        LOG_WARNING("longitude parameter '{}' is error, use {}", str_lng_degrees, lng_degrees);
-    }
+    LOG_WARNING_IF(!dsn::buf2double(str_lng_degrees, lng_degrees),
+                   "longitude parameter '{}' is error, use {}",
+                   str_lng_degrees,
+                   lng_degrees);
     double lat_degrees = 0.0;
     const std::string &str_lat_degrees = redis_request.sub_requests[3].data.to_string();
-    if (!dsn::buf2double(str_lat_degrees, lat_degrees)) {
-        LOG_WARNING("latitude parameter '{}' is error, use {}", str_lat_degrees, lat_degrees);
-    }
+    LOG_WARNING_IF(!dsn::buf2double(str_lat_degrees, lat_degrees),
+                   "latitude parameter '{}' is error, use {}",
+                   str_lat_degrees,
+                   lat_degrees);
 
     // radius m|km|ft|mi [WITHCOORD] [WITHDIST] [COUNT count] [ASC|DESC]
     double radius_m = 100.0;
@@ -916,7 +933,7 @@ void redis_parser::counter_internal(message_entry &entry)
             simple_error_reply(entry, fmt::format("wrong number of arguments for '{}'", command));
             return;
         }
-        if (!dsn::buf2int64(entry.request.sub_requests[2].data, increment)) {
+        if (!dsn::buf2int64(entry.request.sub_requests[2].data.to_string_view(), increment)) {
             LOG_WARNING("{}: command {} seqid({}) with invalid 'increment': {}",
                         _remote_address,
                         command,
@@ -1032,9 +1049,10 @@ void redis_parser::parse_geo_radius_parameters(const std::vector<redis_bulk_stri
             WITHHASH = true;
         } else if (dsn::utils::iequals(opt, "COUNT") && base_index + 1 < opts.size()) {
             const std::string &str_count = opts[base_index + 1].data.to_string();
-            if (!dsn::buf2int32(str_count, count)) {
-                LOG_ERROR("'COUNT {}' option is error, use {}", str_count, count);
-            }
+            LOG_ERROR_IF(!dsn::buf2int32(str_count, count),
+                         "'COUNT {}' option is error, use {}",
+                         str_count,
+                         count);
         } else if (dsn::utils::iequals(opt, "ASC")) {
             sort_type = geo::geo_client::SortType::asc;
         } else if (dsn::utils::iequals(opt, "DESC")) {
@@ -1157,12 +1175,12 @@ void redis_parser::geo_add(message_entry &entry)
     };
 
     for (int i = 0; i < member_count; ++i) {
-        dsn::string_view lng_degree_str(redis_request.sub_requests[2 + i * 3].data);
-        dsn::string_view lat_degree_str(redis_request.sub_requests[2 + i * 3 + 1].data);
         double lng_degree;
         double lat_degree;
-        if (dsn::buf2double(lng_degree_str, lng_degree) &&
-            dsn::buf2double(lat_degree_str, lat_degree)) {
+        if (dsn::buf2double(redis_request.sub_requests[2 + i * 3].data.to_string_view(),
+                            lng_degree) &&
+            dsn::buf2double(redis_request.sub_requests[2 + i * 3 + 1].data.to_string_view(),
+                            lat_degree)) {
             const std::string &hashkey = redis_request.sub_requests[2 + i * 3 + 2].data.to_string();
             _geo_client->async_set(hashkey, "", lat_degree, lng_degree, set_latlng_callback, 2000);
         } else if (set_count->fetch_sub(1) == 1) {

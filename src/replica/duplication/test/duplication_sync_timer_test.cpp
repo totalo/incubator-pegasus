@@ -16,10 +16,23 @@
 // under the License.
 
 #include "replica/duplication/duplication_sync_timer.h"
-#include "duplication_test_base.h"
 
-#include "utils/command_manager.h"
+#include <cstdint>
+#include <initializer_list>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "common/duplication_common.h"
+#include "common/replication.codes.h"
+#include "duplication_test_base.h"
+#include "gtest/gtest.h"
+#include "replica/duplication/replica_duplicator.h"
+#include "replica/duplication/replica_duplicator_manager.h"
+#include "replica/test/mock_utils.h"
+#include "runtime/rpc/rpc_holder.h"
 #include "runtime/rpc/rpc_message.h"
+#include "utils/error_code.h"
 
 namespace dsn {
 namespace replication {
@@ -27,7 +40,7 @@ namespace replication {
 class duplication_sync_timer_test : public duplication_test_base
 {
 public:
-    void SetUp() override { dup_sync = make_unique<duplication_sync_timer>(stub.get()); }
+    void SetUp() override { dup_sync = std::make_unique<duplication_sync_timer>(stub.get()); }
 
     void TearDown() override { stub.reset(); }
 
@@ -68,7 +81,7 @@ public:
             ent.dupid = 1;
             ent.progress[r->get_gpid().get_partition_index()] = 1000;
             ent.status = duplication_status::DS_PAUSE;
-            auto dup = dsn::make_unique<replica_duplicator>(ent, r);
+            auto dup = std::make_unique<replica_duplicator>(ent, r);
             add_dup(r, std::move(dup));
         }
 
@@ -243,7 +256,7 @@ public:
             ent.dupid = 1;
             ent.status = duplication_status::DS_PAUSE;
             ent.progress[r->get_gpid().get_partition_index()] = 0;
-            auto dup = make_unique<replica_duplicator>(ent, r);
+            auto dup = std::make_unique<replica_duplicator>(ent, r);
             dup->update_progress(dup->progress().set_last_decree(3).set_confirmed_decree(1));
             add_dup(r, std::move(dup));
         }
@@ -360,19 +373,21 @@ protected:
     std::unique_ptr<duplication_sync_timer> dup_sync;
 };
 
-TEST_F(duplication_sync_timer_test, duplication_sync) { test_duplication_sync(); }
+INSTANTIATE_TEST_CASE_P(, duplication_sync_timer_test, ::testing::Values(false, true));
 
-TEST_F(duplication_sync_timer_test, update_duplication_map) { test_update_duplication_map(); }
+TEST_P(duplication_sync_timer_test, duplication_sync) { test_duplication_sync(); }
 
-TEST_F(duplication_sync_timer_test, update_on_non_primary) { test_update_on_non_primary(); }
+TEST_P(duplication_sync_timer_test, update_duplication_map) { test_update_duplication_map(); }
 
-TEST_F(duplication_sync_timer_test, update_confirmed_points) { test_update_confirmed_points(); }
+TEST_P(duplication_sync_timer_test, update_on_non_primary) { test_update_on_non_primary(); }
 
-TEST_F(duplication_sync_timer_test, on_duplication_sync_reply) { test_on_duplication_sync_reply(); }
+TEST_P(duplication_sync_timer_test, update_confirmed_points) { test_update_confirmed_points(); }
 
-TEST_F(duplication_sync_timer_test, replica_status_transition) { test_replica_status_transition(); }
+TEST_P(duplication_sync_timer_test, on_duplication_sync_reply) { test_on_duplication_sync_reply(); }
 
-TEST_F(duplication_sync_timer_test, receive_illegal_duplication_status)
+TEST_P(duplication_sync_timer_test, replica_status_transition) { test_replica_status_transition(); }
+
+TEST_P(duplication_sync_timer_test, receive_illegal_duplication_status)
 {
     test_receive_illegal_duplication_status();
 }

@@ -24,23 +24,30 @@
  * THE SOFTWARE.
  */
 
-/*
- * Description:
- *     What is this file about?
- *
- * Revision history:
- *     xxxx-xx-xx, author, first version
- *     xxxx-xx-xx, author, fix bug about xxx
- */
-
 #pragma once
 
+#include <stdint.h>
+#include <map>
+#include <string>
+
+#include "metadata_types.h"
+#include "replica/replication_app_base.h"
 #include "simple_kv.server.h"
-#include "replica/replica.h"
+#include "utils/error_code.h"
+#include "utils/zlocks.h"
 
 namespace dsn {
+class blob;
+template <typename TResponse>
+class rpc_replier;
+
 namespace replication {
+class learn_state;
+class replica;
+
 namespace application {
+class kv_pair;
+
 class simple_kv_service_impl : public simple_kv_service
 {
 public:

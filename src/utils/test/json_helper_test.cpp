@@ -24,8 +24,19 @@
  * THE SOFTWARE.
  */
 
-#include <gtest/gtest.h>
+#include <string.h>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include "common/json_helper.h"
+#include "gtest/gtest.h"
+#include "utils/blob.h"
 
 namespace dsn {
 

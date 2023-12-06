@@ -41,7 +41,6 @@ set(MY_PROJ_LIBS
         dsn_replication_common
         dsn_client
         dsn.block_service.local
-        dsn.block_service.fds
         dsn.block_service
         dsn.failure_detector
         dsn.replication.zookeeper_provider
@@ -50,11 +49,6 @@ set(MY_PROJ_LIBS
         RocksDB::rocksdb
         pegasus_client_static
         event
-        galaxy-fds-sdk-cpp
-        PocoNet
-        PocoFoundation
-        PocoNetSSL
-        PocoJSON
         pegasus_base
         gtest
         gmock
@@ -63,7 +57,7 @@ set(MY_PROJ_LIBS
 add_definitions(-DPEGASUS_UNIT_TEST)
 add_definitions(-DENABLE_FAIL)
 
-set(MY_BOOST_LIBS Boost::system Boost::filesystem Boost::regex)
+set(MY_BOOST_LIBS Boost::system Boost::filesystem)
 
 set(MY_BINPLACES config.ini run.sh)
 

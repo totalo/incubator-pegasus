@@ -41,9 +41,9 @@ set(MY_PROJ_LIBS
     dsn.failure_detector
     gtest
     hashtable
-    )
+    rocksdb)
 
-set(MY_BOOST_LIBS Boost::system Boost::filesystem Boost::regex)
+set(MY_BOOST_LIBS Boost::system Boost::filesystem)
 
 # Extra files that will be installed
 set(MY_BINPLACES

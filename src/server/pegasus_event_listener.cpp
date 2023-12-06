@@ -18,9 +18,20 @@
  */
 
 #include "pegasus_event_listener.h"
-#include "logging_utils.h"
 
-#include "utils/api_utilities.h"
+#include <fmt/core.h>
+#include <rocksdb/compaction_job_stats.h>
+#include <rocksdb/table_properties.h>
+#include <rocksdb/types.h>
+#include <string>
+
+#include "common/gpid.h"
+#include "perf_counter/perf_counter.h"
+#include "utils/fmt_logging.h"
+
+namespace rocksdb {
+class DB;
+} // namespace rocksdb
 
 namespace pegasus {
 namespace server {

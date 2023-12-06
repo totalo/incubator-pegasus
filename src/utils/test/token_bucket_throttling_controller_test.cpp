@@ -16,7 +16,10 @@
 // under the License.
 
 #include "utils/token_bucket_throttling_controller.h"
-#include <gtest/gtest.h>
+
+#include <unistd.h>
+
+#include "gtest/gtest.h"
 
 namespace dsn {
 namespace utils {

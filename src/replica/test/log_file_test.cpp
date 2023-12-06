@@ -15,9 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <gtest/gtest.h>
+#include <stddef.h>
+#include <memory>
+#include <string>
+#include <vector>
 
+#include "aio/aio_task.h"
+#include "common/replication.codes.h"
+#include "gtest/gtest.h"
+#include "replica/log_block.h"
+#include "replica/log_file.h"
 #include "replica_test_base.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/filesystem.h"
 
 namespace dsn {
 namespace replication {
@@ -43,7 +54,9 @@ protected:
     size_t _start_offset{10};
 };
 
-TEST_F(log_file_test, commit_log_blocks)
+INSTANTIATE_TEST_CASE_P(, log_file_test, ::testing::Values(false, true));
+
+TEST_P(log_file_test, commit_log_blocks)
 {
     // write one block
     auto appender = std::make_shared<log_appender>(_start_offset);

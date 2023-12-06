@@ -26,19 +26,30 @@
 
 #pragma once
 
-#include "utils/zlocks.h"
-#include "block_service/block_service.h"
-#include "common/json_helper.h"
+#include <stdint.h>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
+#include "bulk_load_types.h"
+#include "common/gpid.h"
+#include "common/replication_common.h"
+#include "common/replication_other_types.h"
+#include "consensus_types.h"
+#include "dsn.layer2_types.h"
+#include "metadata_types.h"
 #include "mutation.h"
-
-class replication_service_test_app;
+#include "runtime/api_layer1.h"
+#include "runtime/rpc/rpc_address.h"
+#include "runtime/task/task.h"
+#include "utils/autoref_ptr.h"
+#include "utils/fmt_logging.h"
 
 namespace dsn {
 namespace replication {
 
 class replica;
-class replica_stub;
 
 struct remote_learner_state
 {
@@ -74,6 +85,7 @@ typedef std::unordered_map<::dsn::rpc_address, remote_learner_state> learner_map
         }                                                                                          \
     }
 
+// Context of the primary replica.
 class primary_context
 {
 public:
@@ -104,7 +116,7 @@ public:
 
     void cleanup_split_states();
 
-    bool secondary_disk_space_insufficient() const;
+    bool secondary_disk_abnormal() const;
 
 public:
     // membership mgr, including learners
@@ -178,6 +190,7 @@ public:
     std::unordered_map<rpc_address, disk_status::type> secondary_disk_status;
 };
 
+// Context of the secondary replica.
 class secondary_context
 {
 public:
@@ -192,6 +205,7 @@ public:
     ::dsn::task_ptr catchup_with_private_log_task;
 };
 
+// Context of the potential secondary replica.
 class potential_secondary_context
 {
 public:
@@ -240,6 +254,7 @@ public:
     ::dsn::task_ptr completion_notify_task;
 };
 
+// Context of the partition split replica.
 class partition_split_context
 {
 public:

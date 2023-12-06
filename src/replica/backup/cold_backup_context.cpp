@@ -16,12 +16,23 @@
 // under the License.
 
 #include "cold_backup_context.h"
+
+#include <chrono>
+#include <cstdint>
+#include <memory>
+
 #include "common/backup_common.h"
+#include "common/replication.codes.h"
+#include "perf_counter/perf_counter.h"
+#include "perf_counter/perf_counter_wrapper.h"
 #include "replica/replica.h"
 #include "replica/replica_stub.h"
-#include "block_service/block_service_manager.h"
-
+#include "runtime/api_layer1.h"
+#include "runtime/task/async_calls.h"
+#include "utils/blob.h"
+#include "utils/error_code.h"
 #include "utils/filesystem.h"
+#include "utils/utils.h"
 
 namespace dsn {
 namespace replication {
@@ -1017,7 +1028,7 @@ void cold_backup_context::on_upload_file_complete(const std::string &local_filen
     } else {
         CHECK_GT(total, 0.0);
         update_progress(static_cast<int>(complete_size / total * 1000));
-        LOG_INFO("{}: the progress of upload checkpoint is {}", name, _progress);
+        LOG_INFO("{}: the progress of upload checkpoint is {}", name, _progress.load());
     }
     if (is_ready_for_upload()) {
         std::vector<std::string> upload_files;

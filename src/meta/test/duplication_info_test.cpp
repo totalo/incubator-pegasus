@@ -26,8 +26,10 @@
 
 #include "meta/duplication/duplication_info.h"
 
-#include <gtest/gtest.h>
-#include <boost/algorithm/string.hpp>
+#include <boost/algorithm/string/replace.hpp>
+
+#include "gtest/gtest.h"
+#include "runtime/app_model.h"
 
 namespace dsn {
 namespace replication {

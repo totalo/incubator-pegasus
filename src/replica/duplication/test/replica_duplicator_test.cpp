@@ -15,12 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include "utils/filesystem.h"
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
 
-#include "replica/mutation_log_utils.h"
-#include "replica/duplication/load_from_private_log.h"
-#include "replica/duplication/duplication_pipeline.h"
+#include "common/duplication_common.h"
+#include "common/gpid.h"
+#include "common/replication_other_types.h"
 #include "duplication_test_base.h"
+#include "duplication_types.h"
+#include "gtest/gtest.h"
+#include "metadata_types.h"
+#include "replica/duplication/duplication_pipeline.h"
+#include "replica/duplication/mutation_duplicator.h"
+#include "replica/duplication/replica_duplicator.h"
+#include "replica/mutation_log.h"
+#include "replica/test/mock_utils.h"
+#include "runtime/pipeline.h"
+#include "runtime/task/task_code.h"
+#include "utils/autoref_ptr.h"
+#include "utils/error_code.h"
+#include "utils/errors.h"
+#include "utils/threadpool_code.h"
 
 namespace dsn {
 namespace apps {
@@ -65,7 +82,7 @@ public:
         dup_ent.status = status;
         dup_ent.progress[_replica->get_gpid().get_partition_index()] = confirmed_decree;
 
-        auto duplicator = make_unique<replica_duplicator>(dup_ent, _replica.get());
+        auto duplicator = std::make_unique<replica_duplicator>(dup_ent, _replica.get());
         ASSERT_EQ(duplicator->id(), dupid);
         ASSERT_EQ(duplicator->remote_cluster_name(), remote);
         ASSERT_EQ(duplicator->_status, status);
@@ -119,11 +136,13 @@ public:
     }
 };
 
-TEST_F(replica_duplicator_test, new_duplicator) { test_new_duplicator(); }
+INSTANTIATE_TEST_CASE_P(, replica_duplicator_test, ::testing::Values(false, true));
 
-TEST_F(replica_duplicator_test, pause_start_duplication) { test_pause_start_duplication(); }
+TEST_P(replica_duplicator_test, new_duplicator) { test_new_duplicator(); }
 
-TEST_F(replica_duplicator_test, duplication_progress)
+TEST_P(replica_duplicator_test, pause_start_duplication) { test_pause_start_duplication(); }
+
+TEST_P(replica_duplicator_test, duplication_progress)
 {
     auto duplicator = create_test_duplicator();
     ASSERT_EQ(duplicator->progress().last_decree, 0); // start duplication from empty plog
@@ -152,7 +171,7 @@ TEST_F(replica_duplicator_test, duplication_progress)
     ASSERT_TRUE(duplicator_for_checkpoint->progress().checkpoint_has_prepared);
 }
 
-TEST_F(replica_duplicator_test, prapre_dup)
+TEST_P(replica_duplicator_test, prapre_dup)
 {
     auto duplicator = create_test_duplicator(invalid_decree, 100);
     replica()->update_expect_last_durable_decree(100);
