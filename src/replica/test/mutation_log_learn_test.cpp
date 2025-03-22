@@ -41,7 +41,7 @@
 #include "replica/mutation_log.h"
 #include "replica/test/mock_utils.h"
 #include "replica_test_base.h"
-#include "runtime/task/task_code.h"
+#include "task/task_code.h"
 #include "utils/autoref_ptr.h"
 #include "utils/binary_writer.h"
 #include "utils/blob.h"
@@ -57,7 +57,7 @@ class mutation_log_learn_test : public replica_test_base
 {
 };
 
-INSTANTIATE_TEST_CASE_P(, mutation_log_learn_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, mutation_log_learn_test, ::testing::Values(false, true));
 
 TEST_P(mutation_log_learn_test, learn)
 {

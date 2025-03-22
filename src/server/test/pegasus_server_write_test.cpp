@@ -31,7 +31,7 @@
 #include "pegasus_rpc_types.h"
 #include "pegasus_server_test_base.h"
 #include "rrdb/rrdb_types.h"
-#include "runtime/rpc/rpc_holder.h"
+#include "rpc/rpc_holder.h"
 #include "server/pegasus_server_write.h"
 #include "server/pegasus_write_service.h"
 #include "server/pegasus_write_service_impl.h"
@@ -91,8 +91,8 @@ public:
                     writes[i] = pegasus::create_remove_request(key);
                 }
 
-                int err =
-                    _server_write->on_batched_write_requests(writes, total_rpc_cnt, decree, 0);
+                int err = _server_write->on_batched_write_requests(
+                    writes, total_rpc_cnt, decree, 0, nullptr);
                 switch (err) {
                 case FAIL_DB_WRITE_BATCH_PUT:
                 case FAIL_DB_WRITE_BATCH_DELETE:
@@ -106,8 +106,8 @@ public:
                 // make sure everything is cleanup after batch write.
                 ASSERT_TRUE(_server_write->_put_rpc_batch.empty());
                 ASSERT_TRUE(_server_write->_remove_rpc_batch.empty());
-                ASSERT_TRUE(_server_write->_write_svc->_batch_qps_perfcounters.empty());
-                ASSERT_TRUE(_server_write->_write_svc->_batch_latency_perfcounters.empty());
+                ASSERT_EQ(_server_write->_write_svc->_put_batch_size, 0);
+                ASSERT_EQ(_server_write->_write_svc->_remove_batch_size, 0);
                 ASSERT_EQ(_server_write->_write_svc->_batch_start_time, 0);
                 ASSERT_EQ(_server_write->_write_svc->_impl->_rocksdb_wrapper->_write_batch->Count(),
                           0);
@@ -133,11 +133,11 @@ public:
         ASSERT_EQ(response.app_id, _gpid.get_app_id());
         ASSERT_EQ(response.partition_index, _gpid.get_partition_index());
         ASSERT_EQ(response.decree, decree);
-        ASSERT_EQ(response.server, _server_write->_write_svc->_impl->_primary_address);
+        ASSERT_EQ(response.server, _server_write->_write_svc->_impl->_primary_host_port);
     }
 };
 
-INSTANTIATE_TEST_CASE_P(, pegasus_server_write_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, pegasus_server_write_test, ::testing::Values(false, true));
 
 TEST_P(pegasus_server_write_test, batch_writes) { test_batch_writes(); }
 

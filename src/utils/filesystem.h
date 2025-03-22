@@ -32,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "utils/errors.h"
 #include "utils/error_code.h"
 
 #ifndef _XOPEN_SOURCE
@@ -69,13 +70,17 @@ namespace filesystem {
 
 void get_normalized_path(const std::string &path, std::string &npath);
 
+bool is_absolute_path(const std::string &path);
+
 bool get_absolute_path(const std::string &path1, std::string &path2);
 
 std::string remove_file_name(const std::string &path);
 
 std::string get_file_name(const std::string &path);
 
+// TODO(yingchun): The 2 functions are similar, remove concat_path_unix_style.
 std::string path_combine(const std::string &path1, const std::string &path2);
+std::string concat_path_unix_style(const std::string &prefix, const std::string &postfix);
 
 typedef std::function<int(const char *, int, struct FTW *)> ftw_handler;
 bool file_tree_walk(const std::string &dirpath, ftw_handler handler, bool recursive = true);
@@ -162,6 +167,13 @@ bool create_directory(const std::string &path,
 // check if directory is readable and writable
 // call `create_directory` before to make `path` exist
 bool check_dir_rw(const std::string &path, /*out*/ std::string &err_msg);
+
+// Finds paths on the filesystem matching a pattern.
+//
+// The found pathnames are added to the 'paths' vector. If no pathnames are
+// found matching the pattern, no paths are added to the vector and an OK
+// status is returned.
+error_s glob(const std::string &path_pattern, std::vector<std::string> &path_list);
 
 } // namespace filesystem
 } // namespace utils

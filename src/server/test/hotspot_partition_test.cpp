@@ -32,11 +32,11 @@
 #include "utils/fail_point.h"
 #include "utils/flags.h"
 
-namespace pegasus {
-namespace server {
-
 DSN_DECLARE_int32(occurrence_threshold);
 DSN_DECLARE_bool(enable_detect_hotkey);
+
+namespace pegasus {
+namespace server {
 
 class hotspot_partition_test : public pegasus_server_test_base
 {
@@ -119,7 +119,7 @@ public:
     void clear_calculator_histories() { calculator._partitions_stat_histories.clear(); }
 };
 
-INSTANTIATE_TEST_CASE_P(, hotspot_partition_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, hotspot_partition_test, ::testing::Values(false, true));
 
 TEST_P(hotspot_partition_test, hotspot_partition_policy)
 {

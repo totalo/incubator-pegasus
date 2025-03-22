@@ -44,15 +44,21 @@
 #include "pegasus_scan_context.h"
 #include "pegasus_utils.h"
 #include "pegasus_value_schema.h"
-#include "perf_counter/perf_counter_wrapper.h"
 #include "range_read_limiter.h"
 #include "replica/replication_app_base.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_tracker.h"
+#include "task/task.h"
+#include "task/task_tracker.h"
 #include "utils/error_code.h"
 #include "utils/flags.h"
+#include "utils/metrics.h"
 #include "utils/rand.h"
 #include "utils/synchronize.h"
+
+DSN_DECLARE_uint64(rocksdb_abnormal_batch_get_bytes_threshold);
+DSN_DECLARE_uint64(rocksdb_abnormal_batch_get_count_threshold);
+DSN_DECLARE_uint64(rocksdb_abnormal_get_size_threshold);
+DSN_DECLARE_uint64(rocksdb_abnormal_multi_get_iterate_count_threshold);
+DSN_DECLARE_uint64(rocksdb_abnormal_multi_get_size_threshold);
 
 namespace pegasus {
 namespace server {
@@ -71,6 +77,7 @@ class WriteBufferManager;
 namespace dsn {
 class blob;
 class message_ex;
+class rpc_address;
 
 namespace replication {
 class detect_hotkey_request;
@@ -87,12 +94,6 @@ typedef dsn::utils::token_bucket_throttling_controller throttling_controller;
 
 namespace pegasus {
 namespace server {
-
-DSN_DECLARE_uint64(rocksdb_abnormal_batch_get_bytes_threshold);
-DSN_DECLARE_uint64(rocksdb_abnormal_batch_get_count_threshold);
-DSN_DECLARE_uint64(rocksdb_abnormal_get_size_threshold);
-DSN_DECLARE_uint64(rocksdb_abnormal_multi_get_iterate_count_threshold);
-DSN_DECLARE_uint64(rocksdb_abnormal_multi_get_size_threshold);
 
 class capacity_unit_calculator;
 class hotkey_collector;
@@ -146,6 +147,8 @@ public:
     //  - ERR_FILE_OPERATION_FAILED
     ::dsn::error_code stop(bool clear_state) override;
 
+    int make_idempotent(dsn::message_ex *request, dsn::message_ex **new_request) override;
+
     /// Each of the write request (specifically, the rpc that's configured as write, see
     /// option `rpc_request_is_write_operation` in rDSN `task_spec`) will first be
     /// replicated to the replicas through the underlying PacificA protocol in rDSN, and
@@ -156,7 +159,8 @@ public:
     int on_batched_write_requests(int64_t decree,
                                   uint64_t timestamp,
                                   dsn::message_ex **requests,
-                                  int count) override;
+                                  int count,
+                                  dsn::message_ex *original_request) override;
 
     ::dsn::error_code prepare_get_checkpoint(dsn::blob &learn_req) override
     {
@@ -221,6 +225,8 @@ public:
     //  - error code of checkpoint()
     ::dsn::error_code storage_apply_checkpoint(chkpt_apply_mode mode,
                                                const dsn::replication::learn_state &state) override;
+
+    int64_t last_flushed_decree() const override;
 
     int64_t last_durable_decree() const override { return _last_durable_decree.load(); }
 
@@ -298,9 +304,9 @@ private:
     }
 
     // return true if the data is valid for the filter
-    bool validate_filter(::dsn::apps::filter_type::type filter_type,
-                         const ::dsn::blob &filter_pattern,
-                         const ::dsn::blob &value);
+    static bool validate_filter(::dsn::apps::filter_type::type filter_type,
+                                const ::dsn::blob &filter_pattern,
+                                const ::dsn::blob &value);
 
     void update_replica_rocksdb_statistics();
 
@@ -390,8 +396,8 @@ private:
     bool check_value_if_nearby(uint64_t base_value, uint64_t check_value)
     {
         uint64_t gap = base_value / 4;
-        uint64_t actual_gap =
-            (base_value < check_value) ? check_value - base_value : base_value - check_value;
+        uint64_t actual_gap = (base_value < check_value) ? check_value - base_value
+                                                         : base_value - check_value;
         return actual_gap <= gap;
     }
 
@@ -463,15 +469,21 @@ private:
 
     dsn::replication::manual_compaction_status::type query_compact_status() const override;
 
+    // Log expired keys for verbose mode.
+    void log_expired_data(const char *op,
+                          const dsn::rpc_address &addr,
+                          const dsn::blob &hash_key,
+                          const dsn::blob &sort_key) const;
+    void log_expired_data(const char *op, const dsn::rpc_address &addr, const dsn::blob &key) const;
+    void
+    log_expired_data(const char *op, const dsn::rpc_address &addr, const rocksdb::Slice &key) const;
+
 private:
     static const std::chrono::seconds kServerStatUpdateTimeSec;
     static const std::string COMPRESSION_HEADER;
-    // Column family names.
-    static const std::string DATA_COLUMN_FAMILY_NAME;
-    static const std::string META_COLUMN_FAMILY_NAME;
 
     dsn::gpid _gpid;
-    std::string _primary_address;
+    std::string _primary_host_port;
     // slow query time threshold. exceed this threshold will be logged.
     uint64_t _slow_query_threshold_ns;
 
@@ -535,48 +547,48 @@ private:
 
     std::shared_ptr<throttling_controller> _read_size_throttling_controller;
 
-    // perf counters
-    ::dsn::perf_counter_wrapper _pfc_get_qps;
-    ::dsn::perf_counter_wrapper _pfc_multi_get_qps;
-    ::dsn::perf_counter_wrapper _pfc_batch_get_qps;
-    ::dsn::perf_counter_wrapper _pfc_scan_qps;
+    METRIC_VAR_DECLARE_counter(get_requests);
+    METRIC_VAR_DECLARE_counter(multi_get_requests);
+    METRIC_VAR_DECLARE_counter(batch_get_requests);
+    METRIC_VAR_DECLARE_counter(scan_requests);
 
-    ::dsn::perf_counter_wrapper _pfc_get_latency;
-    ::dsn::perf_counter_wrapper _pfc_multi_get_latency;
-    ::dsn::perf_counter_wrapper _pfc_batch_get_latency;
-    ::dsn::perf_counter_wrapper _pfc_scan_latency;
+    METRIC_VAR_DECLARE_percentile_int64(get_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(multi_get_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(batch_get_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(scan_latency_ns);
 
-    ::dsn::perf_counter_wrapper _pfc_recent_expire_count;
-    ::dsn::perf_counter_wrapper _pfc_recent_filter_count;
-    ::dsn::perf_counter_wrapper _pfc_recent_abnormal_count;
+    METRIC_VAR_DECLARE_counter(read_expired_values);
+    METRIC_VAR_DECLARE_counter(read_filtered_values);
+    METRIC_VAR_DECLARE_counter(abnormal_read_requests);
+    METRIC_VAR_DECLARE_counter(throttling_rejected_read_requests);
 
-    // rocksdb internal statistics
-    // server level
-    static ::dsn::perf_counter_wrapper _pfc_rdb_write_limiter_rate_bytes;
-    static ::dsn::perf_counter_wrapper _pfc_rdb_block_cache_mem_usage;
-    // replica level
-    dsn::perf_counter_wrapper _pfc_rdb_sst_count;
-    dsn::perf_counter_wrapper _pfc_rdb_sst_size;
-    dsn::perf_counter_wrapper _pfc_rdb_index_and_filter_blocks_mem_usage;
-    dsn::perf_counter_wrapper _pfc_rdb_memtable_mem_usage;
-    dsn::perf_counter_wrapper _pfc_rdb_estimate_num_keys;
+    // Server-level metrics for rocksdb.
+    METRIC_VAR_DECLARE_gauge_int64(rdb_block_cache_mem_usage_bytes, static);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_write_rate_limiter_through_bytes_per_sec, static);
 
-    dsn::perf_counter_wrapper _pfc_rdb_bf_seek_negatives;
-    dsn::perf_counter_wrapper _pfc_rdb_bf_seek_total;
-    dsn::perf_counter_wrapper _pfc_rdb_bf_point_positive_true;
-    dsn::perf_counter_wrapper _pfc_rdb_bf_point_positive_total;
-    dsn::perf_counter_wrapper _pfc_rdb_bf_point_negatives;
-    dsn::perf_counter_wrapper _pfc_rdb_block_cache_hit_count;
-    dsn::perf_counter_wrapper _pfc_rdb_block_cache_total_count;
-    dsn::perf_counter_wrapper _pfc_rdb_write_amplification;
-    dsn::perf_counter_wrapper _pfc_rdb_read_amplification;
-    dsn::perf_counter_wrapper _pfc_rdb_memtable_hit_count;
-    dsn::perf_counter_wrapper _pfc_rdb_memtable_total_count;
-    dsn::perf_counter_wrapper _pfc_rdb_l0_hit_count;
-    dsn::perf_counter_wrapper _pfc_rdb_l1_hit_count;
-    dsn::perf_counter_wrapper _pfc_rdb_l2andup_hit_count;
+    // Replica-level metrics for rocksdb.
+    METRIC_VAR_DECLARE_gauge_int64(rdb_total_sst_files);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_total_sst_size_mb);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_estimated_keys);
 
-    dsn::perf_counter_wrapper _counter_recent_read_throttling_reject_count;
+    METRIC_VAR_DECLARE_gauge_int64(rdb_index_and_filter_blocks_mem_usage_bytes);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_memtable_mem_usage_bytes);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_block_cache_hit_count);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_block_cache_total_count);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_memtable_hit_count);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_memtable_total_count);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_l0_hit_count);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_l1_hit_count);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_l2_and_up_hit_count);
+
+    METRIC_VAR_DECLARE_gauge_int64(rdb_write_amplification);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_read_amplification);
+
+    METRIC_VAR_DECLARE_gauge_int64(rdb_bloom_filter_seek_negatives);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_bloom_filter_seek_total);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_bloom_filter_point_lookup_negatives);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_bloom_filter_point_lookup_positives);
+    METRIC_VAR_DECLARE_gauge_int64(rdb_bloom_filter_point_lookup_true_positives);
 };
 
 } // namespace server

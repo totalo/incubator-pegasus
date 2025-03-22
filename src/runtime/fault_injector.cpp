@@ -33,10 +33,11 @@
 #include <vector>
 
 #include "aio/aio_task.h"
-#include "runtime/rpc/rpc_message.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_code.h"
-#include "runtime/task/task_spec.h"
+#include "fmt/core.h"
+#include "rpc/rpc_message.h"
+#include "task/task.h"
+#include "task/task_code.h"
+#include "task/task_spec.h"
 #include "utils/blob.h"
 #include "utils/config_api.h"
 #include "utils/config_helper.h"
@@ -322,8 +323,7 @@ void fault_injector::install(service_spec &spec)
         if (i == TASK_CODE_INVALID)
             continue;
 
-        std::string section_name =
-            std::string("task.") + std::string(dsn::task_code(i).to_string());
+        std::string section_name = fmt::format("task.{}", dsn::task_code(i));
         task_spec *spec = task_spec::get(i);
         CHECK_NOTNULL(spec, "");
 
@@ -354,5 +354,5 @@ void fault_injector::install(service_spec &spec)
 }
 
 fault_injector::fault_injector(const char *name) : toollet(name) {}
-}
-}
+} // namespace tools
+} // namespace dsn

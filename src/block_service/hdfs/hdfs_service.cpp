@@ -18,16 +18,19 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <rocksdb/env.h>
+#include <stdlib.h>
 #include <algorithm>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
+#include "fmt/core.h"
 #include "hdfs/hdfs.h"
 #include "hdfs_service.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
-#include "runtime/task/async_calls.h"
-#include "runtime/task/task.h"
+#include "task/async_calls.h"
+#include "task/task.h"
 #include "utils/TokenBucket.h"
 #include "utils/autoref_ptr.h"
 #include "utils/blob.h"
@@ -38,18 +41,7 @@
 #include "utils/fmt_logging.h"
 #include "utils/safe_strerror_posix.h"
 #include "utils/strings.h"
-
-DSN_DECLARE_bool(enable_direct_io);
-
-struct hdfsBuilder;
-
-namespace dsn {
-class task_tracker;
-
-namespace dist {
-namespace block_service {
-
-DEFINE_TASK_CODE(LPC_HDFS_SERVICE_CALL, TASK_PRIORITY_COMMON, THREAD_POOL_BLOCK_SERVICE)
+#include "utils/utils.h"
 
 DSN_DEFINE_uint64(replication,
                   hdfs_read_batch_size_bytes,
@@ -69,28 +61,69 @@ DSN_DEFINE_uint64(replication,
                   "hdfs write batch size, the default value is 64MB");
 DSN_TAG_VARIABLE(hdfs_write_batch_size_bytes, FT_MUTABLE);
 
+DSN_DECLARE_bool(enable_direct_io);
+
+struct hdfsBuilder;
+
+namespace dsn {
+class task_tracker;
+
+namespace dist {
+namespace block_service {
+
+DEFINE_TASK_CODE(LPC_HDFS_SERVICE_CALL, TASK_PRIORITY_COMMON, THREAD_POOL_BLOCK_SERVICE)
+
+namespace {
+static const char *LIBHDFS_OPTS = "LIBHDFS_OPTS";
+static const char *REDUCE_SIGNAL_OPT = "-Xrs";
+
+bool check_LIBHDFS_OPTS()
+{
+    char *str = ::getenv(LIBHDFS_OPTS);
+    if (str == nullptr) {
+        return false;
+    }
+
+    std::unordered_set<std::string> opts;
+    utils::split_args(str, opts, ' ');
+    return opts.count(REDUCE_SIGNAL_OPT) > 0;
+}
+
+void adjust_LIBHDFS_OPTS()
+{
+    if (!check_LIBHDFS_OPTS()) {
+        // Reduces the use of operating system signals by the JVM. See details:
+        // https://docs.oracle.com/javase/8/docs/technotes/tools/unix/java.html
+        std::string new_env;
+        char *old_env = ::getenv(LIBHDFS_OPTS);
+        if (old_env == nullptr) {
+            new_env = REDUCE_SIGNAL_OPT;
+        } else {
+            new_env = fmt::format("{} {}", old_env, REDUCE_SIGNAL_OPT);
+        }
+        ::setenv(LIBHDFS_OPTS, new_env.c_str(), 1);
+        LOG_WARNING("update '{}' to '{}'", LIBHDFS_OPTS, new_env);
+    }
+    CHECK_TRUE(check_LIBHDFS_OPTS());
+}
+} // anonymous namespace
+
 hdfs_service::hdfs_service()
 {
     _read_token_bucket.reset(new folly::DynamicTokenBucket());
     _write_token_bucket.reset(new folly::DynamicTokenBucket());
 }
 
-hdfs_service::~hdfs_service()
-{
-    // We should not call hdfsDisconnect() here if jvm has exited.
-    // And there is no simple, safe way to call hdfsDisconnect()
-    // when process terminates (the proper solution is likely to create a
-    // signal handler to detect when the process is killed, but we would still
-    // leak when pegasus crashes).
-    //
-    // close();
-}
+hdfs_service::~hdfs_service() { close(); }
 
 error_code hdfs_service::initialize(const std::vector<std::string> &args)
 {
     if (args.size() < 1) {
         return ERR_INVALID_PARAMETERS;
     }
+
+    adjust_LIBHDFS_OPTS();
+
     // Name_node and root_path should be set in args of block_service configuration.
     // If no path was configured, just use "/" as default root path.
     _hdfs_name_node = args[0];
@@ -403,8 +436,8 @@ dsn::task_ptr hdfs_file_object::upload(const upload_request &req,
             }
 
             rocksdb::Slice result;
-            char scratch[file_size];
-            s = rfile->Read(file_size, &result, scratch);
+            auto scratch = dsn::utils::make_shared_array<char>(file_size);
+            s = rfile->Read(file_size, &result, scratch.get());
             if (!s.ok()) {
                 LOG_ERROR(
                     "read local file '{}' failed, err = {}", req.input_local_name, s.ToString());

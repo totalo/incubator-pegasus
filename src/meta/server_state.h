@@ -29,7 +29,7 @@
 // IWYU pragma: no_include <boost/detail/basic_pointerbuf.hpp>
 #include <boost/lexical_cast.hpp>
 #include <gtest/gtest_prod.h>
-#include <stdint.h>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
@@ -38,26 +38,32 @@
 #include <utility>
 #include <vector>
 
+#include "app_env_validator.h"
 #include "common/gpid.h"
 #include "common/manual_compact.h"
-#include "dsn.layer2_types.h"
+#include "gutil/map_util.h"
 #include "meta/meta_rpc_types.h"
 #include "meta_data.h"
-#include "perf_counter/perf_counter_wrapper.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_tracker.h"
+#include "table_metrics.h"
+#include "task/task.h"
+#include "task/task_tracker.h"
 #include "utils/error_code.h"
 #include "utils/zlocks.h"
 
 namespace dsn {
+class app_info;
 class blob;
 class command_deregister;
+class host_port;
 class message_ex;
-class rpc_address;
+class partition_configuration;
+class query_cfg_request;
+class query_cfg_response;
 
 namespace replication {
 class configuration_balancer_request;
 class configuration_balancer_response;
+class configuration_create_app_request;
 class configuration_list_apps_request;
 class configuration_list_apps_response;
 class configuration_proposal_action;
@@ -138,25 +144,22 @@ public:
 
     void lock_read(zauto_read_lock &other);
     void lock_write(zauto_write_lock &other);
-    const meta_view get_meta_view() { return {&_all_apps, &_nodes}; }
-    std::shared_ptr<app_state> get_app(const std::string &name) const
+
+    meta_view get_meta_view() { return {&_all_apps, &_nodes}; }
+
+    std::shared_ptr<app_state> get_app(const std::string &app_name) const
     {
-        auto iter = _exist_apps.find(name);
-        if (iter == _exist_apps.end())
-            return nullptr;
-        return iter->second;
+        return gutil::FindWithDefault(_exist_apps, app_name);
     }
+
     std::shared_ptr<app_state> get_app(int32_t app_id) const
     {
-        auto iter = _all_apps.find(app_id);
-        if (iter == _all_apps.end())
-            return nullptr;
-        return iter->second;
+        return gutil::FindWithDefault(_all_apps, app_id);
     }
 
     void query_configuration_by_index(const query_cfg_request &request,
                                       /*out*/ query_cfg_response &response);
-    bool query_configuration_by_gpid(const dsn::gpid id, /*out*/ partition_configuration &config);
+    bool query_configuration_by_gpid(const dsn::gpid id, /*out*/ partition_configuration &pc);
 
     // app options
     void create_app(dsn::message_ex *msg);
@@ -182,7 +185,7 @@ public:
     error_code dump_from_remote_storage(const char *local_path, bool sync_immediately);
     error_code restore_from_local_storage(const char *local_path);
 
-    void on_change_node_state(rpc_address node, bool is_alive);
+    void on_change_node_state(const host_port &node, bool is_alive);
     void on_propose_balancer(const configuration_balancer_request &request,
                              configuration_balancer_response &response);
     void on_start_recovery(const configuration_recovery_request &request,
@@ -200,6 +203,12 @@ public:
     void set_max_replica_count(configuration_set_max_replica_count_rpc rpc);
     void recover_from_max_replica_count_env();
 
+    // Get `atomic_idempotent` of a table.
+    void get_atomic_idempotent(configuration_get_atomic_idempotent_rpc rpc) const;
+
+    // Set `atomic_idempotent` of a table.
+    void set_atomic_idempotent(configuration_set_atomic_idempotent_rpc rpc);
+
     // return true if no need to do any actions
     bool check_all_partitions();
     void get_cluster_balance_score(double &primary_stddev /*out*/, double &total_stddev /*out*/);
@@ -213,6 +222,8 @@ public:
     task_tracker *tracker() { return &_tracker; }
     void wait_all_task() { _tracker.wait_outstanding_tasks(); }
 
+    table_metric_entities &get_table_metric_entities() { return _table_metric_entities; }
+
 private:
     FRIEND_TEST(backup_service_test, test_invalid_backup_request);
 
@@ -221,7 +232,7 @@ private:
     bool can_run_balancer();
 
     // user should lock it first
-    void update_partition_perf_counter();
+    void update_partition_metrics();
 
     error_code dump_app_states(const char *local_path,
                                const std::function<app_state *()> &iterator);
@@ -231,7 +242,7 @@ private:
     // else indicate error that remote storage responses
     error_code sync_apps_to_remote_storage();
 
-    error_code sync_apps_from_replica_nodes(const std::vector<dsn::rpc_address> &node_list,
+    error_code sync_apps_from_replica_nodes(const std::vector<dsn::host_port> &node_list,
                                             bool skip_bad_nodes,
                                             bool skip_lost_partitions,
                                             std::string &hint_message);
@@ -247,13 +258,28 @@ private:
     void check_consistency(const dsn::gpid &gpid);
 
     error_code construct_apps(const std::vector<query_app_info_response> &query_app_responses,
-                              const std::vector<dsn::rpc_address> &replica_nodes,
+                              const std::vector<dsn::host_port> &replica_nodes,
                               std::string &hint_message);
     error_code construct_partitions(
         const std::vector<query_replica_info_response> &query_replica_info_responses,
-        const std::vector<dsn::rpc_address> &replica_nodes,
+        const std::vector<dsn::host_port> &replica_nodes,
         bool skip_lost_partitions,
         std::string &hint_message);
+
+    // Process the status carried in the environment variables of creating table request while
+    // the table is at the status of AS_AVAILABLE, to update remote and local states and reply
+    // to the master cluster.
+    void process_create_follower_app_status(message_ex *msg,
+                                            const configuration_create_app_request &request,
+                                            const std::string &req_master_cluster,
+                                            std::shared_ptr<app_state> &app);
+
+    // Update the meta data with the new creating status both on the remote storage and local
+    // memory.
+    void update_create_follower_app_status(message_ex *msg,
+                                           const std::string &old_status,
+                                           const std::string &new_status,
+                                           std::shared_ptr<app_state> &app);
 
     void do_app_create(std::shared_ptr<app_state> &app);
     void do_app_drop(std::shared_ptr<app_state> &app);
@@ -273,22 +299,19 @@ private:
     void
     update_configuration_locally(app_state &app,
                                  std::shared_ptr<configuration_update_request> &config_request);
-    void request_check(const partition_configuration &old,
+    void request_check(const partition_configuration &old_pc,
                        const configuration_update_request &request);
     void recall_partition(std::shared_ptr<app_state> &app, int pidx);
     void drop_partition(std::shared_ptr<app_state> &app, int pidx);
     void downgrade_primary_to_inactive(std::shared_ptr<app_state> &app, int pidx);
     void downgrade_secondary_to_inactive(std::shared_ptr<app_state> &app,
                                          int pidx,
-                                         const rpc_address &node);
-    void downgrade_stateless_nodes(std::shared_ptr<app_state> &app,
-                                   int pidx,
-                                   const rpc_address &address);
-
-    void on_partition_node_dead(std::shared_ptr<app_state> &app,
-                                int pidx,
-                                const dsn::rpc_address &address);
-    void send_proposal(rpc_address target, const configuration_update_request &proposal);
+                                         const host_port &node);
+    void
+    downgrade_stateless_nodes(std::shared_ptr<app_state> &app, int pidx, const host_port &node);
+    void
+    on_partition_node_dead(std::shared_ptr<app_state> &app, int pidx, const dsn::host_port &node);
+    void send_proposal(const host_port &target, const configuration_update_request &proposal);
     void send_proposal(const configuration_proposal_action &action,
                        const partition_configuration &pc,
                        const app_state &app);
@@ -345,18 +368,16 @@ private:
                                             int32_t partition_index,
                                             int32_t new_max_replica_count,
                                             partition_callback on_partition_updated);
-    task_ptr update_partition_max_replica_count_on_remote(
-        std::shared_ptr<app_state> &app,
-        const partition_configuration &new_partition_config,
-        partition_callback on_partition_updated);
-    void on_update_partition_max_replica_count_on_remote_reply(
-        error_code ec,
-        std::shared_ptr<app_state> &app,
-        const partition_configuration &new_partition_config,
-        partition_callback on_partition_updated);
+    task_ptr update_partition_max_replica_count_on_remote(std::shared_ptr<app_state> &app,
+                                                          const partition_configuration &new_pc,
+                                                          partition_callback on_partition_updated);
     void
-    update_partition_max_replica_count_locally(std::shared_ptr<app_state> &app,
-                                               const partition_configuration &new_partition_config);
+    on_update_partition_max_replica_count_on_remote_reply(error_code ec,
+                                                          std::shared_ptr<app_state> &app,
+                                                          const partition_configuration &new_pc,
+                                                          partition_callback on_partition_updated);
+    void update_partition_max_replica_count_locally(std::shared_ptr<app_state> &app,
+                                                    const partition_configuration &new_pc);
 
     void recover_all_partitions_max_replica_count(std::shared_ptr<app_state> &app,
                                                   int32_t max_replica_count,
@@ -364,6 +385,14 @@ private:
     void recover_app_max_replica_count(std::shared_ptr<app_state> &app,
                                        int32_t max_replica_count,
                                        dsn::task_tracker &tracker);
+
+    // Update `atomic_idempotent` of given table on remote storage.
+    //
+    // Parameters:
+    // - app: the given table.
+    // - rpc: RPC request/response to change `atomic_idempotent`.
+    void update_app_atomic_idempotent_on_remote(std::shared_ptr<app_state> &app,
+                                                configuration_set_atomic_idempotent_rpc rpc);
 
     // Used for `on_start_manual_compaction`
     bool parse_compaction_envs(start_manual_compact_rpc rpc,
@@ -373,19 +402,6 @@ private:
                                                   const std::vector<std::string> &keys,
                                                   const std::vector<std::string> &values);
 
-    bool app_info_compatible_equal(const app_info &l, const app_info &r) const
-    {
-        if (l.status != r.status || l.app_type != r.app_type || l.app_name != r.app_name ||
-            l.app_id != r.app_id || l.partition_count != r.partition_count ||
-            l.is_stateful != r.is_stateful || l.max_replica_count != r.max_replica_count ||
-            l.expire_second != r.expire_second || l.create_second != r.create_second ||
-            l.drop_second != r.drop_second) {
-            return false;
-        }
-        return true;
-    }
-
-private:
     friend class bulk_load_service;
     friend class bulk_load_service_test;
     friend class meta_app_operation_test;
@@ -395,6 +411,7 @@ private:
     friend class meta_split_service;
     friend class meta_split_service_test;
     friend class meta_service_test_app;
+    friend class server_state_test;
     friend class meta_test_base;
     friend class test::test_checker;
     friend class server_state_restore_test;
@@ -428,14 +445,9 @@ private:
     int32_t _add_secondary_max_count_for_one_node;
     std::vector<std::unique_ptr<command_deregister>> _cmds;
 
-    perf_counter_wrapper _dead_partition_count;
-    perf_counter_wrapper _unreadable_partition_count;
-    perf_counter_wrapper _unwritable_partition_count;
-    perf_counter_wrapper _writable_ill_partition_count;
-    perf_counter_wrapper _healthy_partition_count;
-    perf_counter_wrapper _recent_update_config_count;
-    perf_counter_wrapper _recent_partition_change_unwritable_count;
-    perf_counter_wrapper _recent_partition_change_writable_count;
+    app_env_validator _app_env_validator;
+
+    table_metric_entities _table_metric_entities;
 };
 
 } // namespace replication

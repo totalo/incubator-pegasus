@@ -31,7 +31,7 @@
 #include <gtest/gtest.h>
 #include "runtime/app_model.h"
 #include "runtime/service_app.h"
-#include "test_utils.h"
+#include "runtime/test_utils.h"
 #include "utils/flags.h"
 #include "utils/strings.h"
 
@@ -45,7 +45,7 @@ GTEST_API_ int main(int argc, char **argv)
     testing::InitGoogleTest(&argc, argv);
 
     // register all possible services
-    dsn::service_app::register_factory<test_client>("test");
+    dsn::service_app::register_factory<dsn::test_client>("test");
 
     // specify what services and tools will run in config file, then run
     dsn_run(argc, argv, false);

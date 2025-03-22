@@ -24,19 +24,19 @@
 #include <utility>
 
 #include "pegasus/client.h"
-#include "runtime/task/async_calls.h"
-#include "runtime/task/task_code.h"
+#include "task/async_calls.h"
+#include "task/task_code.h"
 #include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/threadpool_code.h"
-
-namespace pegasus {
-namespace server {
 
 DSN_DEFINE_int32(pegasus.collector,
                  capacity_unit_saving_ttl_days,
                  90,
                  "the ttl of the CU data, 0 if no ttl");
+
+namespace pegasus {
+namespace server {
 
 DEFINE_TASK_CODE(LPC_WRITE_RESULT, TASK_PRIORITY_COMMON, ::dsn::THREAD_POOL_DEFAULT)
 

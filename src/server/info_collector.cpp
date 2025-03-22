@@ -32,25 +32,14 @@
 #include "hotspot_partition_calculator.h"
 #include "pegasus/client.h"
 #include "result_writer.h"
-#include "runtime/rpc/group_address.h"
-#include "runtime/task/async_calls.h"
-#include "runtime/task/task_code.h"
+#include "rpc/group_host_port.h"
 #include "shell/command_executor.h"
+#include "task/async_calls.h"
+#include "task/task_code.h"
 #include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/strings.h"
 #include "utils/threadpool_code.h"
-
-namespace pegasus {
-namespace server {
-
-DEFINE_TASK_CODE(LPC_PEGASUS_APP_STAT_TIMER, TASK_PRIORITY_COMMON, ::dsn::THREAD_POOL_DEFAULT)
-DEFINE_TASK_CODE(LPC_PEGASUS_CAPACITY_UNIT_STAT_TIMER,
-                 TASK_PRIORITY_COMMON,
-                 ::dsn::THREAD_POOL_DEFAULT)
-DEFINE_TASK_CODE(LPC_PEGASUS_STORAGE_SIZE_STAT_TIMER,
-                 TASK_PRIORITY_COMMON,
-                 ::dsn::THREAD_POOL_DEFAULT)
 
 DSN_DEFINE_uint32(pegasus.collector, app_stat_interval_seconds, 10, "app stat interval seconds");
 DSN_DEFINE_uint32(pegasus.collector,
@@ -69,14 +58,27 @@ DSN_DEFINE_string(pegasus.collector,
 DSN_DEFINE_validator(usage_stat_app,
                      [](const char *value) -> bool { return !dsn::utils::is_empty(value); });
 
+DSN_DECLARE_string(server_list);
+
+namespace pegasus {
+namespace server {
+
+DEFINE_TASK_CODE(LPC_PEGASUS_APP_STAT_TIMER, TASK_PRIORITY_COMMON, ::dsn::THREAD_POOL_DEFAULT)
+DEFINE_TASK_CODE(LPC_PEGASUS_CAPACITY_UNIT_STAT_TIMER,
+                 TASK_PRIORITY_COMMON,
+                 ::dsn::THREAD_POOL_DEFAULT)
+DEFINE_TASK_CODE(LPC_PEGASUS_STORAGE_SIZE_STAT_TIMER,
+                 TASK_PRIORITY_COMMON,
+                 ::dsn::THREAD_POOL_DEFAULT)
+
 info_collector::info_collector()
 {
-    std::vector<::dsn::rpc_address> meta_servers;
-    replica_helper::load_meta_servers(meta_servers);
+    std::vector<::dsn::host_port> meta_servers;
+    dsn::replication::replica_helper::parse_server_list(FLAGS_server_list, meta_servers);
 
     _meta_servers.assign_group("meta-servers");
     for (auto &ms : meta_servers) {
-        CHECK(_meta_servers.group_address()->add(ms), "");
+        CHECK(_meta_servers.group_host_port()->add(ms), "");
     }
 
     _cluster_name = dsn::get_current_cluster_name();
@@ -84,7 +86,8 @@ info_collector::info_collector()
     _shell_context = std::make_shared<shell_context>();
     _shell_context->current_cluster_name = _cluster_name;
     _shell_context->meta_list = meta_servers;
-    _shell_context->ddl_client.reset(new replication_ddl_client(meta_servers));
+    _shell_context->ddl_client =
+        std::make_unique<dsn::replication::replication_ddl_client>(meta_servers);
 
     // initialize the _client.
     CHECK(pegasus_client_factory::initialize(nullptr), "Initialize the pegasus client failed");
@@ -116,13 +119,13 @@ info_collector::~info_collector()
 
 void info_collector::start()
 {
-    _app_stat_timer_task =
-        ::dsn::tasking::enqueue_timer(LPC_PEGASUS_APP_STAT_TIMER,
-                                      &_tracker,
-                                      [this] { on_app_stat(); },
-                                      std::chrono::seconds(FLAGS_app_stat_interval_seconds),
-                                      0,
-                                      std::chrono::minutes(1));
+    _app_stat_timer_task = ::dsn::tasking::enqueue_timer(
+        LPC_PEGASUS_APP_STAT_TIMER,
+        &_tracker,
+        [this] { on_app_stat(); },
+        std::chrono::seconds(FLAGS_app_stat_interval_seconds),
+        0,
+        std::chrono::minutes(1));
 
     _capacity_unit_stat_timer_task = ::dsn::tasking::enqueue_timer(
         LPC_PEGASUS_CAPACITY_UNIT_STAT_TIMER,
@@ -270,11 +273,12 @@ void info_collector::on_capacity_unit_stat(int remaining_retry_count)
                         "wait {} seconds to retry",
                         remaining_retry_count,
                         _capacity_unit_retry_wait_seconds);
-            ::dsn::tasking::enqueue(LPC_PEGASUS_CAPACITY_UNIT_STAT_TIMER,
-                                    &_tracker,
-                                    [=] { on_capacity_unit_stat(remaining_retry_count - 1); },
-                                    0,
-                                    std::chrono::seconds(_capacity_unit_retry_wait_seconds));
+            ::dsn::tasking::enqueue(
+                LPC_PEGASUS_CAPACITY_UNIT_STAT_TIMER,
+                &_tracker,
+                [=] { on_capacity_unit_stat(remaining_retry_count - 1); },
+                0,
+                std::chrono::seconds(_capacity_unit_retry_wait_seconds));
         } else {
             LOG_ERROR("get capacity unit stat failed, remaining_retry_count = 0, no retry anymore");
         }
@@ -317,11 +321,12 @@ void info_collector::on_storage_size_stat(int remaining_retry_count)
                         "seconds to retry",
                         remaining_retry_count,
                         _storage_size_retry_wait_seconds);
-            ::dsn::tasking::enqueue(LPC_PEGASUS_STORAGE_SIZE_STAT_TIMER,
-                                    &_tracker,
-                                    [=] { on_storage_size_stat(remaining_retry_count - 1); },
-                                    0,
-                                    std::chrono::seconds(_storage_size_retry_wait_seconds));
+            ::dsn::tasking::enqueue(
+                LPC_PEGASUS_STORAGE_SIZE_STAT_TIMER,
+                &_tracker,
+                [=] { on_storage_size_stat(remaining_retry_count - 1); },
+                0,
+                std::chrono::seconds(_storage_size_retry_wait_seconds));
         } else {
             LOG_ERROR("get storage size stat failed, remaining_retry_count = 0, no retry anymore");
         }

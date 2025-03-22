@@ -26,64 +26,52 @@
 
 #include "common/replication_common.h"
 
-// IWYU pragma: no_include <ext/alloc_traits.h>
-#include <algorithm>
+#include <string.h>
 #include <fstream>
 #include <memory>
-#include <set>
 
 #include "common/gpid.h"
-#include "common/replica_envs.h"
 #include "common/replication_other_types.h"
 #include "dsn.layer2_types.h"
 #include "fmt/core.h"
+#include "rpc/dns_resolver.h" // IWYU pragma: keep
+#include "rpc/rpc_address.h"
 #include "runtime/service_app.h"
 #include "utils/config_api.h"
 #include "utils/filesystem.h"
 #include "utils/flags.h"
 #include "utils/fmt_logging.h"
-#include "utils/string_conv.h"
 #include "utils/strings.h"
-
-namespace dsn {
-namespace replication {
+#include "utils/utils.h"
 
 DSN_DEFINE_bool(replication, duplication_enabled, true, "is duplication enabled");
-DSN_DEFINE_int32(replication,
-                 max_concurrent_bulk_load_downloading_count,
-                 5,
-                 "concurrent bulk load downloading replica count");
 
 DSN_DEFINE_int32(replication,
                  mutation_2pc_min_replica_count,
                  2,
-                 "minimum number of alive replicas under which write is allowed. it's valid if "
-                 "larger than 0, otherwise, the final value is based on app_max_replica_count");
-DSN_DEFINE_int32(
-    replication,
-    gc_interval_ms,
-    30 * 1000,
-    "every what period (ms) we do garbage collection for dead replicas, on-disk state, log, etc.");
+                 "The minimum number of ALIVE replicas under which write is allowed. It's valid if "
+                 "larger than 0, otherwise, the final value is based on 'app_max_replica_count'");
+DSN_DEFINE_int32(replication,
+                 gc_interval_ms,
+                 30 * 1000,
+                 "The interval milliseconds to do replica statistics. The name contains 'gc' is "
+                 "for legacy reason");
 DSN_DEFINE_int32(replication,
                  fd_check_interval_seconds,
                  2,
-                 "every this period(seconds) the FD will check healthness of remote peers");
+                 "The interval seconds of failure detector to check healthiness of remote peers");
 DSN_DEFINE_int32(replication,
                  fd_beacon_interval_seconds,
                  3,
-                 "every this period(seconds) the FD sends beacon message to remote peers");
-DSN_DEFINE_int32(replication, fd_lease_seconds, 9, "lease (seconds) get from remote FD master");
+                 "The interval seconds of failure detector to send beacon message to remote peers");
+DSN_DEFINE_int32(replication,
+                 fd_lease_seconds,
+                 20,
+                 "The lease in seconds get from remote FD master");
 DSN_DEFINE_int32(replication,
                  fd_grace_seconds,
-                 10,
-                 "grace (seconds) assigned to remote FD slaves (grace > lease)");
-
-// TODO(yingchun): useless any more, remove it from all config files later.
-// DSN_DEFINE_int32(replication,
-//                     log_shared_batch_buffer_kb,
-//                     0,
-//                     "shared log buffer size (KB) for batching incoming logs");
-
+                 22,
+                 "The grace in seconds assigned to remote FD slaves");
 DSN_DEFINE_int32(replication,
                  cold_backup_checkpoint_reserve_minutes,
                  10,
@@ -96,19 +84,38 @@ DSN_DEFINE_int32(replication,
 DSN_DEFINE_bool(replication,
                 empty_write_disabled,
                 false,
-                "whether to disable empty write, default is false");
+                "Whether to disable the function of primary replicas periodically "
+                "generating empty write operations to check the group status");
 DSN_TAG_VARIABLE(empty_write_disabled, FT_MUTABLE);
 
-DSN_DEFINE_string(replication, slog_dir, "", "The shared log directory");
-DSN_DEFINE_string(replication, data_dirs, "", "replica directory list");
+DSN_DEFINE_string(replication,
+                  slog_dir,
+                  "",
+                  "The shared log directory. Deprecated since Pegasus 2.6.0, but "
+                  "leave it and do not modify the value if upgrading from older versions.");
+DSN_DEFINE_string(replication,
+                  data_dirs,
+                  "",
+                  "A list of directories for replica data storage, it is recommended to "
+                  "configure one item per disk. 'tag' is the tag name of the directory");
 DSN_DEFINE_string(replication,
                   data_dirs_black_list_file,
                   "/home/work/.pegasus_data_dirs_black_list",
-                  "replica directory black list file");
+                  "Blacklist file, where each line is a path that needs to be ignored, mainly used "
+                  "to filter out bad drives");
 DSN_DEFINE_string(replication,
                   cold_backup_root,
                   "",
                   "The prefix of cold backup data path on remote storage");
+DSN_DEFINE_string(meta_server,
+                  server_list,
+                  "",
+                  "Comma-separated list of MetaServers in the Pegasus cluster");
+
+namespace dsn {
+namespace replication {
+const std::string replication_options::kRepsDir = "reps";
+const std::string replication_options::kReplicaAppType = "replica";
 
 replication_options::~replication_options() {}
 
@@ -118,11 +125,7 @@ void replication_options::initialize()
     app_name = info.full_name;
     app_dir = info.data_dir;
 
-    // slog_dir:
-    // - if config[slog_dir] is empty: "app_dir/slog"
-    // - else: "config[slog_dir]/app_name/slog"
-    slog_dir = FLAGS_slog_dir;
-    if (slog_dir.empty()) {
+    if (strlen(FLAGS_slog_dir) == 0) {
         slog_dir = app_dir;
     } else {
         slog_dir = utils::filesystem::path_combine(slog_dir, app_name);
@@ -149,10 +152,8 @@ void replication_options::initialize()
     }
 
     CHECK(!data_dirs.empty(), "no replica data dir found, maybe not set or excluded by black list");
-
-    max_concurrent_bulk_load_downloading_count = FLAGS_max_concurrent_bulk_load_downloading_count;
-
-    CHECK(replica_helper::load_meta_servers(meta_servers), "invalid meta server config");
+    CHECK(replica_helper::parse_server_list(FLAGS_server_list, meta_servers),
+          "invalid meta server config");
 }
 
 int32_t replication_options::app_mutation_2pc_min_replica_count(int32_t app_max_replica_count) const
@@ -165,77 +166,58 @@ int32_t replication_options::app_mutation_2pc_min_replica_count(int32_t app_max_
     }
 }
 
-/*static*/ bool replica_helper::remove_node(::dsn::rpc_address node,
-                                            /*inout*/ std::vector<::dsn::rpc_address> &nodeList)
+/*static*/ bool replica_helper::get_replica_config(const partition_configuration &pc,
+                                                   const ::dsn::host_port &node,
+                                                   /*out*/ replica_configuration &rc)
 {
-    auto it = std::find(nodeList.begin(), nodeList.end(), node);
-    if (it != nodeList.end()) {
-        nodeList.erase(it);
+    rc.pid = pc.pid;
+    rc.ballot = pc.ballot;
+    rc.learner_signature = invalid_signature;
+    SET_OBJ_IP_AND_HOST_PORT(rc, primary, pc, primary);
+
+    if (node == pc.hp_primary) {
+        rc.status = partition_status::PS_PRIMARY;
         return true;
-    } else {
-        return false;
     }
+
+    if (utils::contains(pc.hp_secondaries, node)) {
+        rc.status = partition_status::PS_SECONDARY;
+        return true;
+    }
+
+    rc.status = partition_status::PS_INACTIVE;
+    return false;
 }
 
-/*static*/ bool replica_helper::get_replica_config(const partition_configuration &partition_config,
-                                                   ::dsn::rpc_address node,
-                                                   /*out*/ replica_configuration &replica_config)
+bool replica_helper::load_servers_from_config(const std::string &section,
+                                              const std::string &key,
+                                              /*out*/ std::vector<dsn::host_port> &servers)
 {
-    replica_config.pid = partition_config.pid;
-    replica_config.primary = partition_config.primary;
-    replica_config.ballot = partition_config.ballot;
-    replica_config.learner_signature = invalid_signature;
-
-    if (node == partition_config.primary) {
-        replica_config.status = partition_status::PS_PRIMARY;
-        return true;
-    } else if (std::find(partition_config.secondaries.begin(),
-                         partition_config.secondaries.end(),
-                         node) != partition_config.secondaries.end()) {
-        replica_config.status = partition_status::PS_SECONDARY;
-        return true;
-    } else {
-        replica_config.status = partition_status::PS_INACTIVE;
-        return false;
-    }
+    const auto *server_list = dsn_config_get_value_string(section.c_str(), key.c_str(), "", "");
+    return dsn::replication::replica_helper::parse_server_list(server_list, servers);
 }
 
-bool replica_helper::load_meta_servers(/*out*/ std::vector<dsn::rpc_address> &servers,
-                                       const char *section,
-                                       const char *key)
+bool replica_helper::parse_server_list(const char *server_list,
+                                       /*out*/ std::vector<dsn::host_port> &servers)
 {
     servers.clear();
-    std::string server_list = dsn_config_get_value_string(section, key, "", "");
-    std::vector<std::string> lv;
-    ::dsn::utils::split_args(server_list.c_str(), lv, ',');
-    for (auto &s : lv) {
-        ::dsn::rpc_address addr;
-        std::vector<std::string> hostname_port;
-        uint32_t ip = 0;
-        utils::split_args(s.c_str(), hostname_port, ':');
-        CHECK_EQ_MSG(2,
-                     hostname_port.size(),
-                     "invalid address '{}' specified in config [{}].{}",
-                     s,
-                     section,
-                     key);
-        uint32_t port_num = 0;
-        CHECK(dsn::internal::buf2unsigned(hostname_port[1], port_num) && port_num < UINT16_MAX,
-              "invalid address '{}' specified in config [{}].{}",
-              s,
-              section,
-              key);
-        if (0 != (ip = ::dsn::rpc_address::ipv4_from_host(hostname_port[0].c_str()))) {
-            addr.assign_ipv4(ip, static_cast<uint16_t>(port_num));
-        } else if (!addr.from_string_ipv4(s.c_str())) {
-            LOG_ERROR("invalid address '{}' specified in config [{}].{}", s, section, key);
+    std::vector<std::string> host_port_strs;
+    ::dsn::utils::split_args(server_list, host_port_strs, ',');
+    for (const auto &host_port_str : host_port_strs) {
+        const auto hp = dsn::host_port::from_string(host_port_str);
+        if (!hp) {
+            LOG_ERROR("invalid host_port '{}' specified in '{}'", host_port_str, server_list);
             return false;
         }
-        // TODO(yingchun): check there is no duplicates
-        servers.push_back(addr);
+        servers.push_back(hp);
     }
+
     if (servers.empty()) {
-        LOG_ERROR("no meta server specified in config [{}].{}", section, key);
+        LOG_ERROR("no meta server specified");
+        return false;
+    }
+    if (servers.size() != host_port_strs.size()) {
+        LOG_ERROR("server_list {} have duplicate server", server_list);
         return false;
     }
     return true;
@@ -298,7 +280,7 @@ replication_options::get_data_dir_and_tag(const std::string &config_dirs_str,
     for (unsigned i = 0; i < dirs.size(); ++i) {
         const std::string &dir = dirs[i];
         LOG_INFO("data_dirs[{}] = {}, tag = {}", i + 1, dir, dir_tags[i]);
-        data_dirs.push_back(utils::filesystem::path_combine(dir, "reps"));
+        data_dirs.push_back(utils::filesystem::path_combine(dir, kRepsDir));
         data_dir_tags.push_back(dir_tags[i]);
     }
     return true;
@@ -351,59 +333,5 @@ replication_options::check_if_in_black_list(const std::vector<std::string> &blac
     return false;
 }
 
-const std::string replica_envs::DENY_CLIENT_REQUEST("replica.deny_client_request");
-const std::string replica_envs::WRITE_QPS_THROTTLING("replica.write_throttling");
-const std::string replica_envs::WRITE_SIZE_THROTTLING("replica.write_throttling_by_size");
-const uint64_t replica_envs::MIN_SLOW_QUERY_THRESHOLD_MS = 20;
-const std::string replica_envs::SLOW_QUERY_THRESHOLD("replica.slow_query_threshold");
-const std::string replica_envs::ROCKSDB_USAGE_SCENARIO("rocksdb.usage_scenario");
-const std::string replica_envs::TABLE_LEVEL_DEFAULT_TTL("default_ttl");
-const std::string MANUAL_COMPACT_PREFIX("manual_compact.");
-const std::string replica_envs::MANUAL_COMPACT_DISABLED(MANUAL_COMPACT_PREFIX + "disabled");
-const std::string replica_envs::MANUAL_COMPACT_MAX_CONCURRENT_RUNNING_COUNT(
-    MANUAL_COMPACT_PREFIX + "max_concurrent_running_count");
-const std::string MANUAL_COMPACT_ONCE_PREFIX(MANUAL_COMPACT_PREFIX + "once.");
-const std::string replica_envs::MANUAL_COMPACT_ONCE_TRIGGER_TIME(MANUAL_COMPACT_ONCE_PREFIX +
-                                                                 "trigger_time");
-const std::string replica_envs::MANUAL_COMPACT_ONCE_TARGET_LEVEL(MANUAL_COMPACT_ONCE_PREFIX +
-                                                                 "target_level");
-const std::string replica_envs::MANUAL_COMPACT_ONCE_BOTTOMMOST_LEVEL_COMPACTION(
-    MANUAL_COMPACT_ONCE_PREFIX + "bottommost_level_compaction");
-const std::string MANUAL_COMPACT_PERIODIC_PREFIX(MANUAL_COMPACT_PREFIX + "periodic.");
-const std::string replica_envs::MANUAL_COMPACT_PERIODIC_TRIGGER_TIME(
-    MANUAL_COMPACT_PERIODIC_PREFIX + "trigger_time");
-const std::string replica_envs::MANUAL_COMPACT_PERIODIC_TARGET_LEVEL(
-    MANUAL_COMPACT_PERIODIC_PREFIX + "target_level");
-const std::string replica_envs::MANUAL_COMPACT_PERIODIC_BOTTOMMOST_LEVEL_COMPACTION(
-    MANUAL_COMPACT_PERIODIC_PREFIX + "bottommost_level_compaction");
-const std::string
-    replica_envs::ROCKSDB_CHECKPOINT_RESERVE_MIN_COUNT("rocksdb.checkpoint.reserve_min_count");
-const std::string replica_envs::ROCKSDB_CHECKPOINT_RESERVE_TIME_SECONDS(
-    "rocksdb.checkpoint.reserve_time_seconds");
-const std::string replica_envs::ROCKSDB_ITERATION_THRESHOLD_TIME_MS(
-    "replica.rocksdb_iteration_threshold_time_ms");
-const std::string replica_envs::ROCKSDB_BLOCK_CACHE_ENABLED("replica.rocksdb_block_cache_enabled");
-const std::string replica_envs::BUSINESS_INFO("business.info");
-const std::string replica_envs::REPLICA_ACCESS_CONTROLLER_ALLOWED_USERS(
-    "replica_access_controller.allowed_users");
-const std::string replica_envs::REPLICA_ACCESS_CONTROLLER_RANGER_POLICIES(
-    "replica_access_controller.ranger_policies");
-const std::string replica_envs::READ_QPS_THROTTLING("replica.read_throttling");
-const std::string replica_envs::READ_SIZE_THROTTLING("replica.read_throttling_by_size");
-const std::string
-    replica_envs::SPLIT_VALIDATE_PARTITION_HASH("replica.split.validate_partition_hash");
-const std::string replica_envs::USER_SPECIFIED_COMPACTION("user_specified_compaction");
-const std::string replica_envs::BACKUP_REQUEST_QPS_THROTTLING("replica.backup_request_throttling");
-const std::string replica_envs::ROCKSDB_ALLOW_INGEST_BEHIND("rocksdb.allow_ingest_behind");
-const std::string replica_envs::UPDATE_MAX_REPLICA_COUNT("max_replica_count.update");
-const std::string replica_envs::ROCKSDB_WRITE_BUFFER_SIZE("rocksdb.write_buffer_size");
-const std::string replica_envs::ROCKSDB_NUM_LEVELS("rocksdb.num_levels");
-
-const std::set<std::string> replica_envs::ROCKSDB_DYNAMIC_OPTIONS = {
-    replica_envs::ROCKSDB_WRITE_BUFFER_SIZE,
-};
-const std::set<std::string> replica_envs::ROCKSDB_STATIC_OPTIONS = {
-    replica_envs::ROCKSDB_NUM_LEVELS,
-};
 } // namespace replication
 } // namespace dsn

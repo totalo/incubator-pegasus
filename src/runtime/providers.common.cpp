@@ -26,26 +26,26 @@
 
 #include <string>
 
+#include "rpc/asio_net_provider.h"
+#include "rpc/dsn_message_parser.h"
+#include "rpc/network.sim.h"
+#include "rpc/raw_message_parser.h"
+#include "rpc/thrift_message_parser.h"
 #include "runtime/env_provider.h"
 #include "runtime/providers.common.h"
-#include "runtime/rpc/asio_net_provider.h"
-#include "runtime/rpc/dsn_message_parser.h"
-#include "runtime/rpc/network.sim.h"
-#include "runtime/rpc/raw_message_parser.h"
-#include "runtime/rpc/thrift_message_parser.h"
-#include "runtime/task/hpc_task_queue.h"
-#include "runtime/task/simple_task_queue.h"
-#include "runtime/task/task_spec.h"
-#include "runtime/task/task_worker.h"
 #include "runtime/tool_api.h"
+#include "task/hpc_task_queue.h"
+#include "task/simple_task_queue.h"
+#include "task/task_spec.h"
+#include "task/task_worker.h"
 #include "utils/flags.h"
 #include "utils/lockp.std.h"
 #include "utils/zlock_provider.h"
 
+DSN_DEFINE_bool(network, enable_udp, true, "whether to enable udp rpc engine");
+
 namespace dsn {
 namespace tools {
-
-DSN_DEFINE_bool(network, enable_udp, true, "whether to enable udp rpc engine");
 
 void register_std_lock_providers()
 {

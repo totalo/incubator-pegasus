@@ -36,16 +36,13 @@
 #include "utils/fmt_logging.h"
 #include "utils/macros.h"
 #include "utils/string_conv.h"
-#include "absl/strings/string_view.h"
+#include <string_view>
 
-namespace dsn {
-namespace replication {
-
-DSN_DEFINE_uint64(
-    replication,
-    gc_disk_error_replica_interval_seconds,
-    7 * 24 * 3600 /*7day*/,
-    "Duration of error replica being removed, which is in a directory with '.err' suffixed");
+DSN_DEFINE_uint64(replication,
+                  gc_disk_error_replica_interval_seconds,
+                  7 * 24 * 3600,
+                  "The interval in seconds to GC error replicas, which are in directories "
+                  "suffixed with '.err'");
 DSN_TAG_VARIABLE(gc_disk_error_replica_interval_seconds, FT_MUTABLE);
 
 DSN_DEFINE_uint64(
@@ -69,6 +66,8 @@ DSN_DEFINE_uint64(replication,
                   "directory with '.ori' suffixed");
 DSN_TAG_VARIABLE(gc_disk_migration_origin_replica_interval_seconds, FT_MUTABLE);
 
+namespace dsn {
+namespace replication {
 const std::string kFolderSuffixErr = ".err";
 const std::string kFolderSuffixGar = ".gar";
 const std::string kFolderSuffixBak = ".bak";
@@ -149,7 +148,7 @@ bool parse_timestamp_us(const std::string &name, size_t suffix_size, uint64_t &t
     }
 
     const auto ok =
-        dsn::buf2uint64(absl::string_view(name.data() + begin_idx, length), timestamp_us);
+        dsn::buf2uint64(std::string_view(name.data() + begin_idx, length), timestamp_us);
     return ok ? timestamp_us > MIN_TIMESTAMP_US : false;
 }
 

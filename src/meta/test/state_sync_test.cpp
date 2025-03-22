@@ -25,6 +25,8 @@
  */
 
 #include <boost/lexical_cast.hpp>
+#include <fmt/core.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <fstream> // IWYU pragma: keep
@@ -46,46 +48,51 @@
 #include "meta/test/misc/misc.h"
 #include "meta_admin_types.h"
 #include "meta_service_test_app.h"
-#include "runtime/rpc/rpc_address.h"
-#include "runtime/task/task.h"
+#include "rpc/rpc_address.h"
+#include "rpc/rpc_host_port.h"
+#include "task/task.h"
 #include "utils/autoref_ptr.h"
 #include "utils/error_code.h"
 #include "utils/flags.h"
 #include "utils/strings.h"
+#include "utils/test_macros.h"
 #include "utils/utils.h"
+
+DSN_DECLARE_string(cluster_root);
+DSN_DECLARE_string(meta_state_service_type);
 
 namespace dsn {
 namespace replication {
 class meta_options;
 
-DSN_DECLARE_string(cluster_root);
-DSN_DECLARE_string(meta_state_service_type);
-
 static void random_assign_partition_config(std::shared_ptr<app_state> &app,
-                                           const std::vector<dsn::rpc_address> &server_list,
+                                           std::vector<dsn::host_port> &server_list,
                                            int max_replica_count)
 {
     auto get_server = [&server_list](int indice) {
-        if (indice % 2 != 0)
-            return dsn::rpc_address();
+        if (indice % 2 != 0) {
+            return dsn::host_port();
+        }
         return server_list[indice / 2];
     };
 
     int max_servers = (server_list.size() - 1) * 2 - 1;
-    for (dsn::partition_configuration &pc : app->partitions) {
+    for (auto &pc : app->pcs) {
         int start = 0;
         std::vector<int> indices;
         for (int i = 0; i < max_replica_count && start <= max_servers; ++i) {
             indices.push_back(random32(start, max_servers));
             start = indices.back() + 1;
         }
-        pc.primary = get_server(indices[0]);
+        const auto &primary = get_server(indices[0]);
+        SET_IP_AND_HOST_PORT_BY_DNS(pc, primary, primary);
         for (int i = 1; i < indices.size(); ++i) {
-            dsn::rpc_address addr = get_server(indices[i]);
-            if (!addr.is_invalid())
-                pc.secondaries.push_back(addr);
+            const auto &secondary = get_server(indices[i]);
+            if (secondary) {
+                ADD_IP_AND_HOST_PORT_BY_DNS(pc, secondaries, secondary);
+            }
         }
-        pc.last_drops = {server_list.back()};
+        SET_IPS_AND_HOST_PORTS_BY_DNS(pc, last_drops, server_list.back());
     }
 }
 
@@ -120,7 +127,7 @@ void meta_service_test_app::state_sync_test()
 {
     int apps_count = 15;
     int drop_ratio = 5;
-    std::vector<dsn::rpc_address> server_list;
+    std::vector<dsn::host_port> server_list;
     std::vector<int> drop_set;
     generate_node_list(server_list, 10, 10);
 
@@ -146,10 +153,15 @@ void meta_service_test_app::state_sync_test()
             info.is_stateful = true;
             info.app_id = i;
             info.app_type = "simple_kv";
-            info.app_name = "test_app" + boost::lexical_cast<std::string>(i);
+            info.app_name = fmt::format("test_app{}", i);
             info.max_replica_count = 3;
-            info.partition_count = random32(100, 10000);
+            info.partition_count = static_cast<int32_t>(random32(100, 10000));
             info.status = dsn::app_status::AS_CREATING;
+
+            // `atomic_idempotent` will be set true for the table with even index,
+            // otherwise false.
+            info.atomic_idempotent = (static_cast<uint32_t>(i) & 1U) == 0;
+
             std::shared_ptr<app_state> app = app_state::create(info);
 
             ss->_all_apps.emplace(app->app_id, app);
@@ -164,13 +176,13 @@ void meta_service_test_app::state_sync_test()
             random_assign_partition_config(app, server_list, 3);
             if (app->status == dsn::app_status::AS_DROPPING) {
                 for (int j = 0; j < app->partition_count; ++j) {
-                    app->partitions[j].partition_flags = pc_flags::dropped;
+                    app->pcs[j].partition_flags = pc_flags::dropped;
                 }
             }
         }
 
-        dsn::error_code ec = ss->sync_apps_to_remote_storage();
-        ASSERT_EQ(ec, dsn::ERR_OK);
+        error_code ec = ss->sync_apps_to_remote_storage();
+        ASSERT_EQ(ERR_OK, ec);
         ss->spin_wait_staging();
     }
 
@@ -179,11 +191,20 @@ void meta_service_test_app::state_sync_test()
     {
         std::shared_ptr<server_state> ss2 = std::make_shared<server_state>();
         ss2->initialize(svc, apps_root);
-        dsn::error_code ec = ss2->sync_apps_from_remote_storage();
-        ASSERT_EQ(ec, dsn::ERR_OK);
+        error_code ec = ss2->sync_apps_from_remote_storage();
+        ASSERT_EQ(ERR_OK, ec);
 
         for (int i = 1; i <= apps_count; ++i) {
             std::shared_ptr<app_state> app = ss2->get_app(i);
+
+            // `app->__isset.atomic_idempotent` must be true since by default it is true
+            // (because `app->atomic_idempotent` has default value false).
+            ASSERT_TRUE(app->__isset.atomic_idempotent);
+
+            // Recovered `app->atomic_idempotent` will be true for the table with even
+            // index, otherwise false.
+            ASSERT_EQ((static_cast<uint32_t>(i) & 1U) == 0, app->atomic_idempotent);
+
             for (int j = 0; j < app->partition_count; ++j) {
                 config_context &cc = app->helpers->contexts[j];
                 ASSERT_EQ(1, cc.dropped.size());
@@ -191,7 +212,7 @@ void meta_service_test_app::state_sync_test()
             }
         }
         ec = ss2->dump_from_remote_storage("meta_state.dump1", false);
-        ASSERT_EQ(ec, dsn::ERR_OK);
+        ASSERT_EQ(ERR_OK, ec);
     }
 
     // dump another way
@@ -213,11 +234,12 @@ void meta_service_test_app::state_sync_test()
         dsn::error_code ec;
         dsn::dist::meta_state_service *storage = svc->get_remote_storage();
         storage
-            ->delete_node(apps_root,
-                          true,
-                          LPC_META_CALLBACK,
-                          [&ec](dsn::error_code error) { ec = error; },
-                          nullptr)
+            ->delete_node(
+                apps_root,
+                true,
+                LPC_META_CALLBACK,
+                [&ec](dsn::error_code error) { ec = error; },
+                nullptr)
             ->wait();
         ASSERT_TRUE(dsn::ERR_OK == ec || dsn::ERR_OBJECT_NOT_FOUND == ec);
     }
@@ -241,11 +263,12 @@ void meta_service_test_app::state_sync_test()
         dsn::error_code ec = ss2->initialize_data_structure();
         ASSERT_EQ(ec, dsn::ERR_OK);
 
-        app_mapper_compare(ss1->_all_apps, ss2->_all_apps);
+        NO_FATALS(app_mapper_compare(ss1->_all_apps, ss2->_all_apps));
         ASSERT_EQ(ss1->_exist_apps.size(), ss2->_exist_apps.size());
         for (const auto &iter : ss1->_exist_apps) {
             ASSERT_TRUE(ss2->_exist_apps.find(iter.first) != ss2->_exist_apps.end());
         }
+        ASSERT_EQ(ss1->_table_metric_entities, ss2->_table_metric_entities);
 
         // then we dump the content to local file with binary format
         std::cerr << "test dump to local file from zookeeper's storage" << std::endl;
@@ -261,11 +284,12 @@ void meta_service_test_app::state_sync_test()
         dsn::error_code ec = ss2->restore_from_local_storage("meta_state.dump3");
         ASSERT_EQ(ec, dsn::ERR_OK);
 
-        app_mapper_compare(ss1->_all_apps, ss2->_all_apps);
+        NO_FATALS(app_mapper_compare(ss1->_all_apps, ss2->_all_apps));
         ASSERT_TRUE(ss1->_exist_apps.size() == ss2->_exist_apps.size());
         for (const auto &iter : ss1->_exist_apps) {
             ASSERT_TRUE(ss2->_exist_apps.find(iter.first) != ss2->_exist_apps.end());
         }
+        ASSERT_EQ(ss1->_table_metric_entities, ss2->_table_metric_entities);
         ss2->initialize_node_state();
 
         // then let's test the query configuration calls
@@ -273,7 +297,7 @@ void meta_service_test_app::state_sync_test()
         dsn::gpid gpid = {15, 0};
         dsn::partition_configuration pc;
         ASSERT_TRUE(ss2->query_configuration_by_gpid(gpid, pc));
-        ASSERT_EQ(ss1->_all_apps[15]->partitions[0], pc);
+        ASSERT_EQ(ss1->_all_apps[15]->pcs[0], pc);
         // 1.2 dropped app
         if (!drop_set.empty()) {
             gpid.set_app_id(drop_set[0]);
@@ -293,7 +317,7 @@ void meta_service_test_app::state_sync_test()
         ASSERT_EQ(app_created->partition_count, resp.partition_count);
         ASSERT_EQ(resp.partitions.size(), 3);
         for (int i = 1; i <= 3; ++i)
-            ASSERT_EQ(resp.partitions[i - 1], app_created->partitions[i]);
+            ASSERT_EQ(resp.partitions[i - 1], app_created->pcs[i]);
 
         // 2.2 no exist app
         req.app_name = "make_no_sense";
@@ -334,11 +358,12 @@ void meta_service_test_app::state_sync_test()
 
         dsn::dist::meta_state_service *storage = svc->get_remote_storage();
         storage
-            ->delete_node(ss2->get_partition_path(dsn::gpid{apps_count, 0}),
-                          false,
-                          LPC_META_CALLBACK,
-                          [&ec](dsn::error_code error) { ec = error; },
-                          nullptr)
+            ->delete_node(
+                ss2->get_partition_path(dsn::gpid{apps_count, 0}),
+                false,
+                LPC_META_CALLBACK,
+                [&ec](dsn::error_code error) { ec = error; },
+                nullptr)
             ->wait();
         ASSERT_EQ(ec, dsn::ERR_OK);
 
@@ -379,12 +404,12 @@ void meta_service_test_app::construct_apps_test()
 
     std::shared_ptr<meta_service> svc(new meta_service());
 
-    std::vector<dsn::rpc_address> nodes;
+    std::vector<dsn::host_port> nodes;
     std::string hint_message;
     generate_node_list(nodes, 1, 1);
     svc->_state->construct_apps({resp}, nodes, hint_message);
 
-    meta_view mv = svc->_state->get_meta_view();
+    const meta_view mv = svc->_state->get_meta_view();
     const app_mapper &mapper = *(mv.apps);
     ASSERT_EQ(6, mv.apps->size());
 

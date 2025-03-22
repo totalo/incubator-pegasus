@@ -19,10 +19,16 @@ FROM centos:7.5.1804
 
 LABEL maintainer=wutao
 
-RUN yum -y install centos-release-scl \
+RUN sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo && \
+    sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo && \
+    sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo && \
+    yum -y install centos-release-scl \
                    scl-utils \
-                   epel-release; \
-                   yum -y install devtoolset-7-gcc \
+                   epel-release && \
+    sed -i s/mirror.centos.org/vault.centos.org/g /etc/yum.repos.d/*.repo && \
+    sed -i s/^#.*baseurl=http/baseurl=http/g /etc/yum.repos.d/*.repo && \
+    sed -i s/^mirrorlist=http/#mirrorlist=http/g /etc/yum.repos.d/*.repo && \
+    yum -y install devtoolset-7-gcc \
                    devtoolset-7-gcc-c++ \
                    java-1.8.0-openjdk-devel.x86_64 \
                    python3 \
@@ -42,19 +48,16 @@ RUN yum -y install centos-release-scl \
                    which \
                    openssl-devel \
                    libaio-devel \
-                   snappy-devel \
-                   bzip2-devel \
                    zlib \
                    zlib-devel \
-                   libzstd-devel \
-                   lz4-devel \
                    bison \
                    flex \
                    krb5-devel \
                    cyrus-sasl-devel \
-                   patch; \
-                   yum clean all; \
-                   rm -rf /var/cache/yum;
+                   patch && \
+    yum -y install ca-certificates && \
+    yum clean all && \
+    rm -rf /var/cache/yum;
 
 ENV PATH="/opt/rh/devtoolset-7/root/bin/:${PATH}"
 
@@ -65,11 +68,11 @@ RUN wget --progress=dot:giga https://archive.apache.org/dist/maven/maven-3/3.8.3
     && tar -zxf apache-maven-3.8.3-bin.tar.gz \
     && rm apache-maven-3.8.3-bin.tar.gz
 
-RUN wget --progress=dot:giga https://github.com/apache/thrift/archive/refs/tags/0.11.0.tar.gz -P /opt/thrift && \
-    cd /opt/thrift && tar xzf 0.11.0.tar.gz && cd thrift-0.11.0 && ./bootstrap.sh && \
+RUN wget --progress=dot:giga https://archive.apache.org/dist/thrift/0.11.0/thrift-0.11.0.tar.gz -P /opt/thrift && \
+    cd /opt/thrift && tar xzf thrift-0.11.0.tar.gz && cd thrift-0.11.0 && ./bootstrap.sh && \
     ./configure --enable-libs=no && \
     make -j$(($(nproc)/2+1)) && make install && cd - && \
-    rm -rf thrift-0.11.0 0.11.0.tar.gz
+    rm -rf thrift-0.11.0 thrift-0.11.0.tar.gz
 
 ENV JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk
 ENV PATH="/opt/maven/apache-maven-3.8.3/bin:${PATH}"

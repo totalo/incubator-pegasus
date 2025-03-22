@@ -31,6 +31,7 @@ include "dsn.layer2.thrift"
 include "duplication.thrift"
 include "metadata.thrift"
 include "partition_split.thrift"
+include "utils.thrift"
 
 namespace cpp dsn.replication
 namespace go admin
@@ -67,15 +68,16 @@ struct configuration_update_request
 {
     1:dsn.layer2.app_info                 info;
     2:dsn.layer2.partition_configuration  config;
-    3:config_type              type = config_type.CT_INVALID;
-    4:dsn.rpc_address          node;
-    5:dsn.rpc_address          host_node; // deprecated, only used by stateless apps
+    3:config_type                         type = config_type.CT_INVALID;
+    4:dsn.rpc_address                     node;
+    5:dsn.rpc_address                     host_node; // deprecated, only used by stateless apps
 
     // Used for partition split
     // if replica is splitting (whose split_status is not NOT_SPLIT)
     // the `meta_split_status` will be set
     // only used when on_config_sync
-    6:optional metadata.split_status    meta_split_status;
+    6:optional metadata.split_status      meta_split_status;
+    7:optional dsn.host_port              hp_node;
 }
 
 // meta server (config mgr) => primary | secondary (downgrade) (w/ new config)
@@ -100,9 +102,10 @@ struct replica_server_info
 
 struct configuration_query_by_node_request
 {
-    1:dsn.rpc_address  node;
+    1:dsn.rpc_address                      node;
     2:optional list<metadata.replica_info> stored_replicas;
-    3:optional replica_server_info info;
+    3:optional replica_server_info         info;
+    4:optional dsn.host_port               hp_node;
 }
 
 struct configuration_query_by_node_response
@@ -114,9 +117,10 @@ struct configuration_query_by_node_response
 
 struct configuration_recovery_request
 {
-    1:list<dsn.rpc_address> recovery_set;
-    2:bool skip_bad_nodes;
-    3:bool skip_lost_partitions;
+    1:list<dsn.rpc_address>        recovery_nodes;
+    2:bool                         skip_bad_nodes;
+    3:bool                         skip_lost_partitions;
+    4:optional list<dsn.host_port> hp_recovery_nodes;
 }
 
 struct configuration_recovery_response
@@ -135,6 +139,11 @@ struct create_app_options
     4:string           app_type;
     5:bool             is_stateful;
     6:map<string, string>  envs;
+
+    // Whether all atomic writes to this table are made idempotent:
+    // - true: made idempotent.
+    // - false: kept non-idempotent as their respective client requests. 
+    7:optional bool    atomic_idempotent = false;
 }
 
 struct configuration_create_app_request
@@ -193,18 +202,26 @@ struct configuration_recall_app_response
 
 struct configuration_list_apps_request
 {
-    1:dsn.layer2.app_status    status = app_status.AS_INVALID;
+    1:dsn.layer2.app_status                 status = app_status.AS_INVALID;
+
+    // The pattern is used to match an app name, whose type is specified by `match_type`.
+    2:optional string                       app_name_pattern;
+    3:optional utils.pattern_match_type     match_type;
 }
 
 struct configuration_list_apps_response
 {
-    1:dsn.error_code              err;
-    2:list<dsn.layer2.app_info>   infos;
+    1:dsn.error_code                err;
+    2:list<dsn.layer2.app_info>     infos;
+
+    // Extra message to describe the error.
+    3:optional string               hint_message;
 }
 
 struct query_app_info_request
 {
-    1:dsn.rpc_address meta_server;
+    1:dsn.rpc_address        meta_server;
+    2:optional dsn.host_port hp_meta_server;
 }
 
 struct query_app_info_response
@@ -278,8 +295,9 @@ struct query_app_manual_compact_response
 
 struct node_info
 {
-    1:node_status      status = node_status.NS_INVALID;
-    2:dsn.rpc_address  address;
+    1:node_status            status = node_status.NS_INVALID;
+    2:dsn.rpc_address        node;
+    3:optional dsn.host_port hp_node;
 }
 
 struct configuration_list_nodes_request
@@ -342,13 +360,15 @@ enum balancer_request_type
 
 struct configuration_proposal_action
 {
-    1:dsn.rpc_address target;
-    2:dsn.rpc_address node;
-    3:config_type type;
+    1:dsn.rpc_address        target;
+    2:dsn.rpc_address        node;
+    3:config_type            type;
 
     // depricated now
     // new fields of this struct should start with 5
     // 4:i64 period_ts;
+    5:optional dsn.host_port hp_target;
+    6:optional dsn.host_port hp_node;
 }
 
 struct configuration_balancer_request
@@ -374,13 +394,14 @@ struct ddd_diagnose_request
 
 struct ddd_node_info
 {
-    1:dsn.rpc_address node;
-    2:i64             drop_time_ms;
-    3:bool            is_alive; // if the node is alive now
-    4:bool            is_collected; // if replicas has been collected from this node
-    5:i64             ballot; // collected && ballot == -1 means replica not exist on this node
-    6:i64             last_committed_decree;
-    7:i64             last_prepared_decree;
+    1:dsn.rpc_address        node;
+    2:i64                    drop_time_ms;
+    3:bool                   is_alive; // if the node is alive now
+    4:bool                   is_collected; // if replicas has been collected from this node
+    5:i64                    ballot; // collected && ballot == -1 means replica not exist on this node
+    6:i64                    last_committed_decree;
+    7:i64                    last_prepared_decree;
+    8:optional dsn.host_port hp_node;
 }
 
 struct ddd_partition_info
@@ -421,6 +442,36 @@ struct configuration_set_max_replica_count_response
     3:string                    hint_message;
 }
 
+// Get the idempotence (see app_info::atomic_idempotent) of given table for atomic writes.
+struct configuration_get_atomic_idempotent_request
+{
+    1:string                    app_name;
+}
+
+struct configuration_get_atomic_idempotent_response
+{
+    1:dsn.error_code            err;
+    2:bool                      atomic_idempotent;
+    3:string                    hint_message;
+}
+
+// Change the idempotence (see app_info::atomic_idempotent) of given table for atomic writes.
+struct configuration_set_atomic_idempotent_request
+{
+    1:string                    app_name;
+    2:bool                      atomic_idempotent;
+}
+
+struct configuration_set_atomic_idempotent_response
+{
+    1:dsn.error_code            err;
+
+    // Previous atomic_idempotent before updated.
+    2:bool                      old_atomic_idempotent;
+
+    3:string                    hint_message;
+}
+
 // ONLY FOR GO
 // A client to MetaServer's administration API.
 service admin_client
@@ -438,6 +489,8 @@ service admin_client
     duplication.duplication_query_response query_duplication(1: duplication.duplication_query_request req);
 
     duplication.duplication_modify_response modify_duplication(1: duplication.duplication_modify_request req);
+
+    duplication.duplication_list_response list_duplication(1: duplication.duplication_list_request req);
 
     query_app_info_response query_app_info(1: query_app_info_request req);
 

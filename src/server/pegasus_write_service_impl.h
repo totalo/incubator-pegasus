@@ -22,9 +22,9 @@
 #include <gtest/gtest_prod.h>
 
 #include "base/idl_utils.h"
+#include "base/meta_store.h"
 #include "base/pegasus_key_schema.h"
 #include "logging_utils.h"
-#include "meta_store.h"
 #include "pegasus_server_impl.h"
 #include "pegasus_write_service.h"
 #include "rocksdb_wrapper.h"
@@ -59,16 +59,6 @@ struct db_get_context
     bool expired{false};
 };
 
-inline int get_cluster_id_if_exists()
-{
-    // cluster_id is 0 if not configured, which means it will accept writes
-    // from any cluster as long as the timestamp is larger.
-    static auto cluster_id_res =
-        dsn::replication::get_duplication_cluster_id(dsn::get_current_cluster_name());
-    static uint64_t cluster_id = cluster_id_res.is_ok() ? cluster_id_res.get_value() : 0;
-    return cluster_id;
-}
-
 inline dsn::error_code get_external_files_path(const std::string &bulk_load_dir,
                                                const bool verify_before_ingest,
                                                const dsn::replication::bulk_load_metadata &metadata,
@@ -91,9 +81,8 @@ class pegasus_write_service::impl : public dsn::replication::replica_base
 public:
     explicit impl(pegasus_server_impl *server)
         : replica_base(server),
-          _primary_address(server->_primary_address),
-          _pegasus_data_version(server->_pegasus_data_version),
-          _pfc_recent_expire_count(server->_pfc_recent_expire_count)
+          _primary_host_port(server->_primary_host_port),
+          _pegasus_data_version(server->_pegasus_data_version)
     {
         _rocksdb_wrapper = std::make_unique<rocksdb_wrapper>(server);
     }
@@ -101,7 +90,7 @@ public:
     int empty_put(int64_t decree)
     {
         int err =
-            _rocksdb_wrapper->write_batch_put(decree, absl::string_view(), absl::string_view(), 0);
+            _rocksdb_wrapper->write_batch_put(decree, std::string_view(), std::string_view(), 0);
         auto cleanup = dsn::defer([this]() { _rocksdb_wrapper->clear_up_write_batch(); });
         if (err != rocksdb::Status::kOk) {
             return err;
@@ -118,7 +107,7 @@ public:
         resp.app_id = get_gpid().get_app_id();
         resp.partition_index = get_gpid().get_partition_index();
         resp.decree = decree;
-        resp.server = _primary_address;
+        resp.server = _primary_host_port;
 
         if (update.kvs.empty()) {
             LOG_ERROR_PREFIX("invalid argument for multi_put: decree = {}, error = {}",
@@ -153,7 +142,7 @@ public:
         resp.app_id = get_gpid().get_app_id();
         resp.partition_index = get_gpid().get_partition_index();
         resp.decree = decree;
-        resp.server = _primary_address;
+        resp.server = _primary_host_port;
 
         if (update.sort_keys.empty()) {
             LOG_ERROR_PREFIX("invalid argument for multi_remove: decree = {}, error = {}",
@@ -182,14 +171,107 @@ public:
         return resp.error;
     }
 
+    // Tranlate an incr request into a single-put request which is certainly idempotent.
+    // Return current status for RocksDB. Only called by primary replicas.
+    int make_idempotent(const dsn::apps::incr_request &req,
+                        dsn::apps::incr_response &err_resp,
+                        dsn::apps::update_request &update)
+    {
+        // Get current raw value for the provided key from the RocksDB instance.
+        db_get_context get_ctx;
+        const int err = _rocksdb_wrapper->get(req.key.to_string_view(), &get_ctx);
+        if (dsn_unlikely(err != rocksdb::Status::kOk)) {
+            return make_error_response(err, err_resp);
+        }
+
+        if (!get_ctx.found || get_ctx.expired) {
+            // Once the provided key is not found or has been expired, we could assume that
+            // its value is 0 before incr; thus the final result for incr could be set as
+            // the value of the single-put request, i.e. req.increment.
+            return make_idempotent_request_for_incr(
+                req.key, req.increment, calc_expire_on_non_existent(req), update);
+        }
+
+        // Extract user data from raw value as base for increment.
+        dsn::blob base_value;
+        pegasus_extract_user_data(_pegasus_data_version, std::move(get_ctx.raw_value), base_value);
+
+        int64_t new_int = 0;
+        if (base_value.empty()) {
+            // Old value is also considered as 0 before incr as above once it's empty, thus
+            // set req.increment as the value for single put.
+            new_int = req.increment;
+        } else {
+            int64_t base_int = 0;
+            if (dsn_unlikely(!dsn::buf2int64(base_value.to_string_view(), base_int))) {
+                // Old value is not valid int64.
+                LOG_ERROR_PREFIX("incr failed: error = base value \"{}\" "
+                                 "is not an integer or out of range",
+                                 utils::c_escape_sensitive_string(base_value));
+                return make_error_response(rocksdb::Status::kInvalidArgument, err_resp);
+            }
+
+            new_int = base_int + req.increment;
+            if (dsn_unlikely((req.increment > 0 && new_int < base_int) ||
+                             (req.increment < 0 && new_int > base_int))) {
+                // New value overflows, just respond with the base value.
+                LOG_ERROR_PREFIX("incr failed: error = new value is out of range, "
+                                 "base_value = {}, increment = {}, new_value = {}",
+                                 base_int,
+                                 req.increment,
+                                 new_int);
+                return make_error_response(rocksdb::Status::kInvalidArgument, base_int, err_resp);
+            }
+        }
+
+        return make_idempotent_request_for_incr(
+            req.key, new_int, calc_expire_on_existing(req, get_ctx), update);
+    }
+
+    // Apply single-put request translated from incr request into RocksDB, and build response
+    // for incr. Return current status for RocksDB. Only called by primary replicas.
+    int put(const db_write_context &ctx,
+            const dsn::apps::update_request &update,
+            dsn::apps::incr_response &resp)
+    {
+        resp.app_id = get_gpid().get_app_id();
+        resp.partition_index = get_gpid().get_partition_index();
+        resp.decree = ctx.decree;
+        resp.server = _primary_host_port;
+
+        auto cleanup = dsn::defer([this]() { _rocksdb_wrapper->clear_up_write_batch(); });
+
+        resp.error =
+            _rocksdb_wrapper->write_batch_put_ctx(ctx,
+                                                  update.key.to_string_view(),
+                                                  update.value.to_string_view(),
+                                                  static_cast<uint32_t>(update.expire_ts_seconds));
+        if (dsn_unlikely(resp.error != rocksdb::Status::kOk)) {
+            return resp.error;
+        }
+
+        resp.error = _rocksdb_wrapper->write(ctx.decree);
+        if (dsn_unlikely(resp.error != rocksdb::Status::kOk)) {
+            return resp.error;
+        }
+
+        // Shouldn't fail to parse since the value must be a valid int64.
+        CHECK(dsn::buf2int64(update.value.to_string_view(), resp.new_value),
+              "invalid int64 value for put idempotent incr: key={}, value={}",
+              update.key,
+              update.value);
+
+        return resp.error;
+    }
+
     int incr(int64_t decree, const dsn::apps::incr_request &update, dsn::apps::incr_response &resp)
     {
         resp.app_id = get_gpid().get_app_id();
         resp.partition_index = get_gpid().get_partition_index();
         resp.decree = decree;
-        resp.server = _primary_address;
+        resp.server = _primary_host_port;
 
-        absl::string_view raw_key = update.key.to_string_view();
+        std::string_view raw_key = update.key.to_string_view();
         int64_t new_value = 0;
         uint32_t new_expire_ts = 0;
         db_get_context get_ctx;
@@ -253,7 +335,7 @@ public:
         auto cleanup = dsn::defer([this]() { _rocksdb_wrapper->clear_up_write_batch(); });
         resp.error = _rocksdb_wrapper->write_batch_put(
             decree, update.key.to_string_view(), std::to_string(new_value), new_expire_ts);
-        if (resp.error) {
+        if (resp.error != rocksdb::Status::kOk) {
             return resp.error;
         }
 
@@ -261,6 +343,7 @@ public:
         if (resp.error == rocksdb::Status::kOk) {
             resp.new_value = new_value;
         }
+
         return resp.error;
     }
 
@@ -271,7 +354,7 @@ public:
         resp.app_id = get_gpid().get_app_id();
         resp.partition_index = get_gpid().get_partition_index();
         resp.decree = decree;
-        resp.server = _primary_address;
+        resp.server = _primary_host_port;
 
         if (!is_check_type_supported(update.check_type)) {
             LOG_ERROR_PREFIX("invalid argument for check_and_set: decree = {}, error = {}",
@@ -286,7 +369,7 @@ public:
         pegasus_generate_key(check_key, update.hash_key, update.check_sort_key);
 
         db_get_context get_context;
-        absl::string_view check_raw_key = check_key.to_string_view();
+        std::string_view check_raw_key = check_key.to_string_view();
         int err = _rocksdb_wrapper->get(check_raw_key, &get_context);
         if (err != rocksdb::Status::kOk) {
             // read check value failed
@@ -338,7 +421,7 @@ public:
         } else {
             // check not passed, write empty record to update rocksdb's last flushed decree
             resp.error = _rocksdb_wrapper->write_batch_put(
-                decree, absl::string_view(), absl::string_view(), 0);
+                decree, std::string_view(), std::string_view(), 0);
         }
 
         auto cleanup = dsn::defer([this]() { _rocksdb_wrapper->clear_up_write_batch(); });
@@ -353,8 +436,8 @@ public:
 
         if (!passed) {
             // check not passed, return proper error code to user
-            resp.error =
-                invalid_argument ? rocksdb::Status::kInvalidArgument : rocksdb::Status::kTryAgain;
+            resp.error = invalid_argument ? rocksdb::Status::kInvalidArgument
+                                          : rocksdb::Status::kTryAgain;
         }
 
         return rocksdb::Status::kOk;
@@ -367,7 +450,7 @@ public:
         resp.app_id = get_gpid().get_app_id();
         resp.partition_index = get_gpid().get_partition_index();
         resp.decree = decree;
-        resp.server = _primary_address;
+        resp.server = _primary_host_port;
 
         if (update.mutate_list.empty()) {
             LOG_ERROR_PREFIX("invalid argument for check_and_mutate: decree = {}, error = {}",
@@ -406,7 +489,7 @@ public:
         pegasus_generate_key(check_key, update.hash_key, update.check_sort_key);
 
         db_get_context get_context;
-        absl::string_view check_raw_key = check_key.to_string_view();
+        std::string_view check_raw_key = check_key.to_string_view();
         int err = _rocksdb_wrapper->get(check_raw_key, &get_context);
         if (err != rocksdb::Status::kOk) {
             // read check value failed
@@ -464,7 +547,7 @@ public:
         } else {
             // check not passed, write empty record to update rocksdb's last flushed decree
             resp.error = _rocksdb_wrapper->write_batch_put(
-                decree, absl::string_view(), absl::string_view(), 0);
+                decree, std::string_view(), std::string_view(), 0);
         }
 
         auto cleanup = dsn::defer([this]() { _rocksdb_wrapper->clear_up_write_batch(); });
@@ -479,8 +562,8 @@ public:
 
         if (!passed) {
             // check not passed, return proper error code to user
-            resp.error =
-                invalid_argument ? rocksdb::Status::kInvalidArgument : rocksdb::Status::kTryAgain;
+            resp.error = invalid_argument ? rocksdb::Status::kInvalidArgument
+                                          : rocksdb::Status::kTryAgain;
         }
         return rocksdb::Status::kOk;
     }
@@ -563,7 +646,7 @@ private:
             resp.app_id = get_gpid().get_app_id();
             resp.partition_index = get_gpid().get_partition_index();
             resp.decree = decree;
-            resp.server = _primary_address;
+            resp.server = _primary_host_port;
             for (dsn::apps::update_response *uresp : _update_responses) {
                 *uresp = resp;
             }
@@ -573,11 +656,88 @@ private:
         _rocksdb_wrapper->clear_up_write_batch();
     }
 
-    static dsn::blob composite_raw_key(absl::string_view hash_key, absl::string_view sort_key)
+    static dsn::blob composite_raw_key(std::string_view hash_key, std::string_view sort_key)
     {
         dsn::blob raw_key;
         pegasus_generate_key(raw_key, hash_key, sort_key);
         return raw_key;
+    }
+
+    // Calculate expire timestamp in seconds for the keys not contained in the storage
+    // according to `req`.
+    template <typename TRequest>
+    static inline int32_t calc_expire_on_non_existent(const TRequest &req)
+    {
+        return req.expire_ts_seconds > 0 ? req.expire_ts_seconds : 0;
+    }
+
+    // Calculate new expire timestamp in seconds for the keys contained in the storage
+    // according to `req` and their current expire timestamp in `get_ctx`.
+    template <typename TRequest>
+    static inline int32_t calc_expire_on_existing(const TRequest &req,
+                                                  const db_get_context &get_ctx)
+    {
+        if (req.expire_ts_seconds == 0) {
+            // Still use current expire timestamp of the existing key as the new value.
+            return static_cast<int32_t>(get_ctx.expire_ts);
+        }
+
+        if (req.expire_ts_seconds < 0) {
+            // Reset expire timestamp to 0.
+            return 0;
+        }
+
+        return req.expire_ts_seconds;
+    }
+
+    // Build a single-put request by provided int64 value.
+    static inline void make_idempotent_request(const dsn::blob &key,
+                                               int64_t value,
+                                               int32_t expire_ts_seconds,
+                                               dsn::apps::update_type::type type,
+                                               dsn::apps::update_request &update)
+    {
+        update.key = key;
+        update.value = dsn::blob::create_from_numeric(value);
+        update.expire_ts_seconds = expire_ts_seconds;
+        update.__set_type(type);
+    }
+
+    // Build corresponding single-put request for an incr request, and return current status
+    // for RocksDB, i.e. kOk.
+    static inline int make_idempotent_request_for_incr(const dsn::blob &key,
+                                                       int64_t value,
+                                                       int32_t expire_ts_seconds,
+                                                       dsn::apps::update_request &update)
+    {
+        make_idempotent_request(
+            key, value, expire_ts_seconds, dsn::apps::update_type::UT_INCR, update);
+        return rocksdb::Status::kOk;
+    }
+
+    // Build incr response only for error, and return the current error status for RocksDB.
+    inline int make_error_response(int err, dsn::apps::incr_response &resp)
+    {
+        CHECK(err != rocksdb::Status::kOk, "this incr response is built only for error");
+        resp.error = err;
+
+        const auto pid = get_gpid();
+        resp.app_id = pid.get_app_id();
+        resp.partition_index = pid.get_partition_index();
+
+        // Currently the mutation has not been assigned with valid decree, thus set to -1.
+        resp.decree = -1;
+
+        resp.server = _primary_host_port;
+
+        return err;
+    }
+
+    // Build incr response as above, except that also set new value for response.
+    inline int make_error_response(int err, int64_t new_value, dsn::apps::incr_response &resp)
+    {
+        resp.new_value = new_value;
+        return make_error_response(err, resp);
     }
 
     // return true if the check type is supported
@@ -620,7 +780,7 @@ private:
                 return false;
             if (check_type == ::dsn::apps::cas_check_type::CT_VALUE_MATCH_ANYWHERE) {
                 return value.to_string_view().find(check_operand.to_string_view()) !=
-                       absl::string_view::npos;
+                       std::string_view::npos;
             } else if (check_type == ::dsn::apps::cas_check_type::CT_VALUE_MATCH_PREFIX) {
                 return dsn::utils::mequals(
                     value.data(), check_operand.data(), check_operand.length());
@@ -689,18 +849,13 @@ private:
         return false;
     }
 
-private:
     friend class pegasus_write_service_test;
     friend class pegasus_server_write_test;
-    friend class pegasus_write_service_impl_test;
+    friend class PegasusWriteServiceImplTest;
     friend class rocksdb_wrapper_test;
-    FRIEND_TEST(pegasus_write_service_impl_test, put_verify_timetag);
-    FRIEND_TEST(pegasus_write_service_impl_test, verify_timetag_compatible_with_version_0);
 
-    const std::string _primary_address;
+    const std::string _primary_host_port;
     const uint32_t _pegasus_data_version;
-
-    ::dsn::perf_counter_wrapper &_pfc_recent_expire_count;
 
     std::unique_ptr<rocksdb_wrapper> _rocksdb_wrapper;
 

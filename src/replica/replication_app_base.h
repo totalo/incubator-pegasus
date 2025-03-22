@@ -26,12 +26,8 @@
 
 #pragma once
 
-#include <rocksdb/env.h>
-#include <rocksdb/slice.h>
-#include <rocksdb/status.h>
-#include <stdint.h>
-#include <string.h>
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <string>
 
@@ -41,12 +37,9 @@
 #include "metadata_types.h"
 #include "replica/replica_base.h"
 #include "replica_admin_types.h"
-#include "utils/defer.h"
-#include "utils/env.h"
 #include "utils/error_code.h"
-#include "utils/filesystem.h"
-#include "utils/fmt_logging.h"
 #include "utils/fmt_utils.h"
+#include "utils/metrics.h"
 #include "utils/ports.h"
 
 namespace dsn {
@@ -55,44 +48,21 @@ class blob;
 class message_ex;
 
 namespace replication {
-
 class learn_state;
 class mutation;
 class replica;
 
-namespace {
-template <class T>
-error_code write_blob_to_file(const std::string &fname,
-                              const T &data,
-                              const dsn::utils::FileDataType &fileDataType)
-{
-    std::string tmp_fname = fname + ".tmp";
-    auto cleanup = defer([tmp_fname]() { utils::filesystem::remove_path(tmp_fname); });
-    auto s = rocksdb::WriteStringToFile(dsn::utils::PegasusEnv(fileDataType),
-                                        rocksdb::Slice(data.data(), data.length()),
-                                        tmp_fname,
-                                        /* should_sync */ true);
-    LOG_AND_RETURN_NOT_TRUE(
-        ERROR, s.ok(), ERR_FILE_OPERATION_FAILED, "write file {} failed", tmp_fname);
-    LOG_AND_RETURN_NOT_TRUE(ERROR,
-                            utils::filesystem::rename_path(tmp_fname, fname),
-                            ERR_FILE_OPERATION_FAILED,
-                            "move file from {} to {} failed",
-                            tmp_fname,
-                            fname);
-    return ERR_OK;
-}
-} // namespace
-
 class replica_init_info
 {
 public:
-    int32_t magic;
-    int32_t crc;
-    ballot init_ballot;
-    decree init_durable_decree;
-    int64_t init_offset_in_shared_log;
-    int64_t init_offset_in_private_log;
+    int32_t magic = 0;
+    int32_t crc = 0;
+    ballot init_ballot = 0;
+    decree init_durable_decree = 0;
+    int64_t init_offset_in_shared_log = 0; // Deprecated since Pegasus 2.6.0, but leave it to keep
+                                           // compatible readability to read replica_init_info from
+                                           // older Pegasus version.
+    int64_t init_offset_in_private_log = 0;
     DEFINE_JSON_SERIALIZATION(init_ballot,
                               init_durable_decree,
                               init_offset_in_shared_log,
@@ -100,19 +70,15 @@ public:
 
     static const std::string kInitInfo;
 
-public:
-    replica_init_info() { memset((void *)this, 0, sizeof(*this)); }
-    error_code load(const std::string &dir) WARN_UNUSED_RESULT;
-    error_code store(const std::string &dir);
-    std::string to_string();
-
 private:
-    error_code load_json(const std::string &fname);
-    error_code store_json(const std::string &fname);
+    std::string to_string() const;
 };
 
 class replica_app_info
 {
+public:
+    static const std::string kAppInfo;
+
 private:
     app_info *_app;
 
@@ -120,6 +86,24 @@ public:
     replica_app_info(app_info *app) { _app = app; }
     error_code load(const std::string &fname);
     error_code store(const std::string &fname);
+};
+
+// This class stores and loads EEK, IV, and KV from KMS as a JSON file.
+// To get the decrypted key, should POST EEK, IV, and KV to KMS.
+struct kms_info
+{
+    std::string encrypted_key;         // a.k.a encrypted encryption key
+    std::string initialization_vector; // a.k.a initialization vector
+    std::string key_version;           // a.k.a key version
+    DEFINE_JSON_SERIALIZATION(encrypted_key, initialization_vector, key_version)
+    static const std::string kKmsInfo; // json file name
+
+    kms_info(const std::string &e_key = "",
+             const std::string &i = "",
+             const std::string &k_version = "")
+        : encrypted_key(e_key), initialization_vector(i), key_version(k_version)
+    {
+    }
 };
 
 /// The store engine interface of Pegasus.
@@ -142,17 +126,19 @@ public:
     typedef replication_app_base *factory(replica *r);
     static void register_storage_engine(const std::string &name, factory f);
     static replication_app_base *new_storage_instance(const std::string &name, replica *r);
+    static const std::string kDataDir;
+    static const std::string kRdbDir;
 
-    virtual ~replication_app_base() {}
+    virtual ~replication_app_base() = default;
 
-    bool is_primary() const;
+    [[nodiscard]] bool is_primary() const;
 
     // Whether this replica is duplicating as master.
-    virtual bool is_duplication_master() const;
+    [[nodiscard]] virtual bool is_duplication_master() const;
     // Whether this replica is duplicating as follower.
-    virtual bool is_duplication_follower() const;
+    [[nodiscard]] virtual bool is_duplication_follower() const;
 
-    const ballot &get_ballot() const;
+    [[nodiscard]] const ballot &get_ballot() const;
 
     //
     // Open the app.
@@ -252,25 +238,60 @@ public:
     //
     // Query methods.
     //
+
+    // Get the decree of the last flushed mutation. -1 means failed to get.
+    virtual replication::decree last_flushed_decree() const = 0;
+
+    // Get the decree of the last created checkpoint.
     virtual replication::decree last_durable_decree() const = 0;
+
     // The return type is generated by storage engine, e.g. rocksdb::Status::Code, 0 always mean OK.
     virtual int on_request(message_ex *request) WARN_UNUSED_RESULT = 0;
 
+    // Make an atomic request received from the client idempotent. Only called by primary replicas.
+    //
+    // Current implementation for atomic requests (incr, check_and_set and check_and_mutate) is
+    // not idempotent. This function is used to translate them into requests like single put
+    // which is naturally idempotent.
+    //
+    // For the other requests which must be idempotent such as single put/remove or non-batch
+    // writes, this function would do nothing.
     //
     // Parameters:
+    // - request: the original request received from a client.
+    // - new_request: as the output parameter pointing to the resulting idempotent request if the
+    // original request is atomic, otherwise keeping unchanged.
+    //
+    // Return:
+    // - for an idempotent requess always return rocksdb::Status::kOk .
+    // - for an atomic request, return rocksdb::Status::kOk if succeed in making it idempotent;
+    // otherwise, return error code (rocksdb::Status::Code).
+    virtual int make_idempotent(dsn::message_ex *request, dsn::message_ex **new_request) = 0;
+
+    // Apply batched write requests from a mutation. This is a virtual function, and base class
+    // provide a naive implementation that just call on_request for each request. Storage engine
+    // may override this function to get better performance.
+    //
+    // Parameters:
+    //  - decree: the decree of the mutation which these requests are batched into.
     //  - timestamp: an incremental timestamp generated for this batch of requests.
+    //  - requests: the requests to be applied.
+    //  - request_length: the number of the requests.
+    //  - original_request: the original request received from the client. Must be an atomic
+    //  request (i.e. incr, check_and_set and check_and_mutate) if non-null, and another
+    //  parameter `requests` must hold the idempotent request translated from it. Used to
+    //  reply to the client.
     //
-    // The base class gives a naive implementation that just call on_request
-    // repeatedly. Storage engine may override this function to get better performance.
-    //
-    // The return type is generated by storage engine, e.g. rocksdb::Status::Code, 0 always mean OK.
+    // Return rocksdb::Status::kOk or some error code (rocksdb::Status::Code) if these requests
+    // failed to be applied by storage engine.
     virtual int on_batched_write_requests(int64_t decree,
                                           uint64_t timestamp,
                                           message_ex **requests,
-                                          int request_length);
+                                          int request_length,
+                                          message_ex *original_request);
 
-    // query compact state.
-    virtual std::string query_compact_state() const = 0;
+    // Query compact state.
+    [[nodiscard]] virtual std::string query_compact_state() const = 0;
 
     // update app envs.
     virtual void update_app_envs(const std::map<std::string, std::string> &envs) = 0;
@@ -324,13 +345,10 @@ private:
     friend class replica_disk_migrator;
 
     error_code open_internal(replica *r);
-    error_code open_new_internal(replica *r, int64_t shared_log_start, int64_t private_log_start);
+    error_code open_new_internal(replica *r, int64_t private_log_start);
 
     const replica_init_info &init_info() const { return _info; }
-    error_code update_init_info(replica *r,
-                                int64_t shared_log_offset,
-                                int64_t private_log_offset,
-                                int64_t durable_decree);
+    error_code update_init_info(replica *r, int64_t private_log_offset, int64_t durable_decree);
     error_code update_init_info_ballot_and_decree(replica *r);
 
 protected:
@@ -344,6 +362,9 @@ protected:
     replica_init_info _info;
 
     explicit replication_app_base(replication::replica *replica);
+
+private:
+    METRIC_VAR_DECLARE_counter(committed_requests);
 };
 USER_DEFINED_ENUM_FORMATTER(replication_app_base::chkpt_apply_mode)
 } // namespace replication

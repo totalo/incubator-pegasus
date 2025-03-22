@@ -35,14 +35,15 @@
 #include "meta/meta_backup_service.h"
 #include "meta/meta_data.h"
 #include "meta/meta_service.h"
+#include "rpc/dns_resolver.h"
+#include "rpc/rpc_holder.h"
+#include "rpc/rpc_host_port.h"
 #include "runtime/api_layer1.h"
-#include "runtime/rpc/rpc_address.h"
-#include "runtime/rpc/rpc_holder.h"
-#include "runtime/task/async_calls.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_code.h"
-#include "runtime/task/task_tracker.h"
 #include "server_state.h"
+#include "task/async_calls.h"
+#include "task/task.h"
+#include "task/task_code.h"
+#include "task/task_tracker.h"
 #include "utils/autoref_ptr.h"
 #include "utils/blob.h"
 #include "utils/chrono_literals.h"
@@ -169,7 +170,7 @@ error_code backup_engine::backup_app_meta()
 
 void backup_engine::backup_app_partition(const gpid &pid)
 {
-    dsn::rpc_address partition_primary;
+    dsn::host_port partition_primary;
     {
         zauto_read_lock l;
         _backup_service->get_state()->lock_read(l);
@@ -181,19 +182,20 @@ void backup_engine::backup_app_partition(const gpid &pid)
             _is_backup_failed = true;
             return;
         }
-        partition_primary = app->partitions[pid.get_partition_index()].primary;
+        partition_primary = app->pcs[pid.get_partition_index()].hp_primary;
     }
 
-    if (partition_primary.is_invalid()) {
+    if (!partition_primary) {
         LOG_WARNING(
             "backup_id({}): partition {} doesn't have a primary now, retry to backup it later.",
             _cur_backup.backup_id,
-            pid.to_string());
-        tasking::enqueue(LPC_DEFAULT_CALLBACK,
-                         &_tracker,
-                         [this, pid]() { backup_app_partition(pid); },
-                         0,
-                         std::chrono::seconds(10));
+            pid);
+        tasking::enqueue(
+            LPC_DEFAULT_CALLBACK,
+            &_tracker,
+            [this, pid]() { backup_app_partition(pid); },
+            0,
+            std::chrono::seconds(10));
         return;
     }
 
@@ -211,13 +213,14 @@ void backup_engine::backup_app_partition(const gpid &pid)
 
     LOG_INFO("backup_id({}): send backup request to partition {}, target_addr = {}",
              _cur_backup.backup_id,
-             pid.to_string(),
-             partition_primary.to_string());
+             pid,
+             partition_primary);
     backup_rpc rpc(std::move(req), RPC_COLD_BACKUP, 10000_ms, 0, pid.thread_hash());
-    rpc.call(
-        partition_primary, &_tracker, [this, rpc, pid, partition_primary](error_code err) mutable {
-            on_backup_reply(err, rpc.response(), pid, partition_primary);
-        });
+    rpc.call(dsn::dns_resolver::instance().resolve_address(partition_primary),
+             &_tracker,
+             [this, rpc, pid, partition_primary](error_code err) mutable {
+                 on_backup_reply(err, rpc.response(), pid, partition_primary);
+             });
 
     zauto_lock l(_lock);
     _backup_status[pid.get_partition_index()] = backup_status::ALIVE;
@@ -231,8 +234,8 @@ inline void backup_engine::handle_replica_backup_failed(const backup_response &r
 
     LOG_ERROR("backup_id({}): backup for partition {} failed, response.err: {}",
               _cur_backup.backup_id,
-              pid.to_string(),
-              response.err.to_string());
+              pid,
+              response.err);
     zauto_lock l(_lock);
     // if one partition fail, the whole backup plan fail.
     _is_backup_failed = true;
@@ -241,17 +244,18 @@ inline void backup_engine::handle_replica_backup_failed(const backup_response &r
 
 inline void backup_engine::retry_backup(const dsn::gpid pid)
 {
-    tasking::enqueue(LPC_DEFAULT_CALLBACK,
-                     &_tracker,
-                     [this, pid]() { backup_app_partition(pid); },
-                     0,
-                     std::chrono::seconds(1));
+    tasking::enqueue(
+        LPC_DEFAULT_CALLBACK,
+        &_tracker,
+        [this, pid]() { backup_app_partition(pid); },
+        0,
+        std::chrono::seconds(1));
 }
 
 void backup_engine::on_backup_reply(const error_code err,
                                     const backup_response &response,
                                     const gpid pid,
-                                    const rpc_address &primary)
+                                    const host_port &primary)
 {
     {
         zauto_lock l(_lock);
@@ -278,8 +282,8 @@ void backup_engine::on_backup_reply(const error_code err,
         LOG_ERROR("backup_id({}): backup request to server {} failed, error: {}, retry to "
                   "send backup request.",
                   _cur_backup.backup_id,
-                  primary.to_string(),
-                  rep_error.to_string());
+                  primary,
+                  rep_error);
         retry_backup(pid);
         return;
     };
@@ -287,9 +291,7 @@ void backup_engine::on_backup_reply(const error_code err,
     if (response.progress == cold_backup_constant::PROGRESS_FINISHED) {
         CHECK_EQ(response.pid, pid);
         CHECK_EQ(response.backup_id, _cur_backup.backup_id);
-        LOG_INFO("backup_id({}): backup for partition {} completed.",
-                 _cur_backup.backup_id,
-                 pid.to_string());
+        LOG_INFO("backup_id({}): backup for partition {} completed.", _cur_backup.backup_id, pid);
         {
             zauto_lock l(_lock);
             _backup_status[pid.get_partition_index()] = backup_status::COMPLETED;
@@ -302,8 +304,8 @@ void backup_engine::on_backup_reply(const error_code err,
     LOG_INFO("backup_id({}): receive backup response for partition {} from server {}, now "
              "progress {}, retry to send backup request.",
              _cur_backup.backup_id,
-             pid.to_string(),
-             primary.to_string(),
+             pid,
+             primary,
              response.progress);
 
     retry_backup(pid);
@@ -320,7 +322,7 @@ void backup_engine::write_backup_info()
         LOG_ERROR(
             "backup_id({}): write backup info failed, error {}, do not try again for this error.",
             _cur_backup.backup_id,
-            err.to_string());
+            err);
         zauto_lock l(_lock);
         _is_backup_failed = true;
         return;
@@ -328,11 +330,12 @@ void backup_engine::write_backup_info()
     if (err != ERR_OK) {
         LOG_WARNING("backup_id({}): write backup info failed, retry it later.",
                     _cur_backup.backup_id);
-        tasking::enqueue(LPC_DEFAULT_CALLBACK,
-                         &_tracker,
-                         [this]() { write_backup_info(); },
-                         0,
-                         std::chrono::seconds(1));
+        tasking::enqueue(
+            LPC_DEFAULT_CALLBACK,
+            &_tracker,
+            [this]() { write_backup_info(); },
+            0,
+            std::chrono::seconds(1));
         return;
     }
     LOG_INFO("backup_id({}): successfully wrote backup info, backup for app {} completed.",
@@ -364,7 +367,7 @@ error_code backup_engine::start()
         LOG_ERROR("backup_id({}): backup meta data for app {} failed, error {}",
                   _cur_backup.backup_id,
                   _cur_backup.app_id,
-                  err.to_string());
+                  err);
         return err;
     }
     for (int i = 0; i < _backup_status.size(); ++i) {

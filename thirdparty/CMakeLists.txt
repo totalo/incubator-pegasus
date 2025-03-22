@@ -17,7 +17,7 @@
 # under the License.
 ##############################################################################
 
-cmake_minimum_required(VERSION 3.11.0)
+cmake_minimum_required(VERSION 3.24.0)
 project(pegasus_thirdparties)
 
 if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
@@ -58,11 +58,10 @@ file(MAKE_DIRECTORY ${TP_OUTPUT}/include)
 file(MAKE_DIRECTORY ${TP_OUTPUT}/lib)
 
 ExternalProject_Add(boost
-        URL ${OSS_URL_PREFIX}/boost_1_69_0.tar.bz2
-        https://dl.bintray.com/boostorg/release/1.69.0/source/boost_1_69_0.tar.bz2
-        URL_MD5 a1332494397bf48332cb152abfefcec2
-        CONFIGURE_COMMAND ./bootstrap.sh --prefix=. --with-libraries=system,filesystem --with-toolset=gcc
-        BUILD_COMMAND ./b2 toolset=gcc cxxflags=-fPIC cxxstd=11 install
+        URL https://github.com/boostorg/boost/releases/download/boost-1.86.0/boost-1.86.0-b2-nodocs.tar.gz
+        URL_MD5 30a657150d8e5cf431e1de4396a433d0
+        CONFIGURE_COMMAND ./bootstrap.sh --prefix=. --with-libraries=filesystem,system --with-toolset=gcc
+        BUILD_COMMAND ./b2 toolset=gcc link=static cxxflags=-fPIC cxxflags=--std=c++17 install
         INSTALL_COMMAND cp -R include/boost ${TP_OUTPUT}/include && cp -R lib ${TP_OUTPUT}/
         BUILD_IN_SOURCE 1
         DOWNLOAD_EXTRACT_TIMESTAMP true
@@ -120,17 +119,51 @@ ExternalProject_Add(gperftools
         DOWNLOAD_NO_PROGRESS true
 )
 
+ExternalProject_Add(abseil
+        URL ${OSS_URL_PREFIX}/abseil-20230802.1.zip
+        https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.1.zip
+        URL_MD5 5c6193dbc82834f8e762c6a28c9cc615
+        CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DABSL_FIND_GOOGLETEST=OFF
+        -DCMAKE_CXX_STANDARD=17
+        DOWNLOAD_EXTRACT_TIMESTAMP true
+        DOWNLOAD_NO_PROGRESS true
+)
+
+ExternalProject_Add(protobuf
+        URL https://github.com/protocolbuffers/protobuf/archive/refs/tags/v27.0.tar.gz
+        URL_MD5 c96aaf02c8acea549d65bb7b2d549bf6
+        CMAKE_ARGS -DCMAKE_BUILD_TYPE=release
+        -Dprotobuf_BUILD_TESTS=OFF
+        -Dprotobuf_BUILD_PROTOC_BINARIES=ON
+        -Dprotobuf_BUILD_LIBUPB=ON
+        -Dprotobuf_ABSL_PROVIDER=package
+        -DBUILD_SHARED_LIBS=ON
+        -DBUILD_SHARED_HDFSPP=ON
+        -DHDFSPP_LIBRARY_ONLY=ON
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_CXX_STANDARD=17
+        -DABSL_ROOT_DIR=${TP_OUTPUT}
+        -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+        -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        DEPENDS abseil
+        DOWNLOAD_EXTRACT_TIMESTAMP true
+        DOWNLOAD_NO_PROGRESS true
+)
+
 set(HDFS_CLIENT_DIR "hadoop-hdfs-project/hadoop-hdfs-native-client")
 ExternalProject_Add(hadoop
-        URL ${OSS_URL_PREFIX}/hadoop-release-2.8.4.tar.gz
-        https://github.com/apache/hadoop/archive/refs/tags/rel/release-2.8.4.tar.gz
-        URL_MD5 a1be737d4bff14923689619ab6545a96
-        PATCH_COMMAND ""
+        URL https://mirrors.aliyun.com/apache/hadoop/common/hadoop-3.3.6/hadoop-3.3.6-src.tar.gz
+        URL_MD5 285c07d8ad2c837c8ee04a4fa49c73cd
+        PATCH_COMMAND patch -p1 < ${TP_DIR}/fix_hdfs_native_client.patch
         COMMAND cd ${HDFS_CLIENT_DIR} && mvn package -Pdist,native -DskipTests -Dmaven.javadoc.skip=true -Dtar
-        COMMAND cd ${HDFS_CLIENT_DIR} && cp -R target/hadoop-hdfs-native-client-2.8.4/include/. ${TP_OUTPUT}/include/hdfs && cp -R target/hadoop-hdfs-native-client-2.8.4/lib/native/. ${TP_OUTPUT}/lib
+        COMMAND cd ${HDFS_CLIENT_DIR} && cp -R target/hadoop-hdfs-native-client-3.3.6/include/. ${TP_OUTPUT}/include/hdfs && cp -R target/hadoop-hdfs-native-client-3.3.6/lib/native/. ${TP_OUTPUT}/lib
         CONFIGURE_COMMAND ""
         BUILD_COMMAND ""
         INSTALL_COMMAND ""
+        DEPENDS protobuf
         DOWNLOAD_EXTRACT_TIMESTAMP true
         DOWNLOAD_NO_PROGRESS true
 )
@@ -152,7 +185,7 @@ ExternalProject_Add(thrift
         URL ${OSS_URL_PREFIX}/thrift-0.9.3.tar.gz
         http://archive.apache.org/dist/thrift/0.9.3/thrift-0.9.3.tar.gz
         URL_MD5 88d667a8ae870d5adeca8cb7d6795442
-        PATCH_COMMAND patch -p1 < ${TP_DIR}/fix_thrift_for_cpp11.patch
+        PATCH_COMMAND patch -p1 < ${TP_DIR}/fix_thrift_build_and_link_errors.patch
         CMAKE_ARGS -DCMAKE_BUILD_TYPE=release
         -DWITH_JAVA=OFF
         -DWITH_PYTHON=OFF
@@ -170,6 +203,9 @@ ExternalProject_Add(thrift
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON
         -DWITH_SHARED_LIB=OFF
         -DBOOST_ROOT=${TP_OUTPUT}
+        # The dependence boost library of thrift needs C++14 at least, but some standard
+        # functions (e.g. std::random_shuffle) are removed from C++17, so don't use C++17.
+        -DCMAKE_CXX_STANDARD=14
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
         DEPENDS boost
@@ -233,20 +269,6 @@ ExternalProject_Add(fmt
         DOWNLOAD_NO_PROGRESS true
 )
 
-# civetweb is one of the dependencies of promemetheus-cpp, do not build & install
-ExternalProject_Add(civetweb
-        URL ${OSS_URL_PREFIX}/civetweb-1.11.tar.gz
-        https://codeload.github.com/civetweb/civetweb/tar.gz/v1.11
-        URL_MD5 b6d2175650a27924bccb747cbe084cd4
-        CONFIGURE_COMMAND ""
-        BUILD_COMMAND ""
-        INSTALL_COMMAND ""
-        DOWNLOAD_EXTRACT_TIMESTAMP true
-        DOWNLOAD_NO_PROGRESS true
-)
-ExternalProject_Get_property(civetweb SOURCE_DIR)
-set(civetweb_SRC ${SOURCE_DIR})
-
 set(CURL_OPTIONS
         --disable-dict
         --disable-file
@@ -263,7 +285,8 @@ set(CURL_OPTIONS
         --disable-smtp
         --disable-telnet
         --disable-tftp
-        --without-libidn
+        --without-brotli
+        --without-libidn2
         --without-librtmp
         --without-libssh2
         --without-ssl
@@ -275,15 +298,13 @@ if (APPLE)
     set(CURL_OPTIONS
             ${CURL_OPTIONS}
             --without-nghttp2
-            --without-libidn2
-            --without-brotli
             )
 endif ()
 ExternalProject_Add(curl
         URL ${OSS_URL_PREFIX}/curl-8.4.0.tar.gz
         http://curl.haxx.se/download/curl-8.4.0.tar.gz
         URL_MD5 533e8a3b1228d5945a6a512537bea4c7
-        CONFIGURE_COMMAND ./configure --prefix=${TP_OUTPUT}
+        CONFIGURE_COMMAND CFLAGS=-fPIC CPPFLAGS=-fPIC ./configure --prefix=${TP_OUTPUT}
         ${CURL_OPTIONS}
         BUILD_IN_SOURCE 1
         DOWNLOAD_EXTRACT_TIMESTAMP true
@@ -291,13 +312,13 @@ ExternalProject_Add(curl
 )
 
 ExternalProject_Add(prometheus-cpp
-        URL ${OSS_URL_PREFIX}/prometheus-cpp-0.7.0.tar.gz
-        https://codeload.github.com/jupp0r/prometheus-cpp/tar.gz/v0.7.0
-        URL_MD5 dc75c31ceaefd160e978365bdca8eb01
-        DEPENDS civetweb curl
-        # TODO(yingchun): replace the submodule
-        PATCH_COMMAND rm -rf 3rdparty/civetweb && cp -R ${civetweb_SRC} 3rdparty/civetweb && patch -p0 < ${TP_DIR}/fix_prometheus-cpp_limits.patch
+        URL ${OSS_URL_PREFIX}/prometheus-cpp-with-submodules-1.2.4.tar.gz
+        https://github.com/jupp0r/prometheus-cpp/releases/download/v1.2.4/prometheus-cpp-with-submodules.tar.gz
+        URL_MD5 cdb515e802aa9aaaf1f6dde1271a20a2
+        DEPENDS curl
         CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DCMAKE_C_FLAGS=-fPIC
+        -DCMAKE_CXX_FLAGS=-fPIC
         -DENABLE_TESTING=OFF
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
@@ -314,18 +335,6 @@ ExternalProject_Add(nlohmann_json
         BUILD_COMMAND ""
         INSTALL_COMMAND cp -R include/nlohmann ${TP_OUTPUT}/include
         BUILD_IN_SOURCE 1
-        DOWNLOAD_EXTRACT_TIMESTAMP true
-        DOWNLOAD_NO_PROGRESS true
-)
-
-ExternalProject_Add(abseil
-        URL ${OSS_URL_PREFIX}/abseil-20230802.1.zip
-        https://github.com/abseil/abseil-cpp/archive/refs/tags/20230802.1.zip
-        URL_MD5 5c6193dbc82834f8e762c6a28c9cc615
-        CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-        -DABSL_FIND_GOOGLETEST=OFF
-        -DCMAKE_CXX_STANDARD=17
         DOWNLOAD_EXTRACT_TIMESTAMP true
         DOWNLOAD_NO_PROGRESS true
 )
@@ -361,14 +370,88 @@ ExternalProject_Add(jemalloc
         DOWNLOAD_NO_PROGRESS true
 )
 
+set(SNAPPY_OPTIONS
+        -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DCMAKE_INSTALL_LIBDIR=lib
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_BUILD_TYPE=Release
+        -DBUILD_SHARED_LIBS=OFF
+        -DSNAPPY_BUILD_TESTS=OFF
+        -DSNAPPY_BUILD_BENCHMARKS=OFF
+        -DSNAPPY_FUZZING_BUILD=OFF
+        -DSNAPPY_INSTALL=ON)
+execute_process(COMMAND arch OUTPUT_VARIABLE ARCH_NAME OUTPUT_STRIP_TRAILING_WHITESPACE)
+if (ARCH_NAME STREQUAL "x86_64")
+    set(SNAPPY_OPTIONS
+            ${SNAPPY_OPTIONS}
+            -DSNAPPY_REQUIRE_AVX=ON
+            -DSNAPPY_REQUIRE_AVX2=ON)
+endif ()
+ExternalProject_Add(snappy
+        URL ${OSS_URL_PREFIX}/snappy-1.1.10.tar.gz
+        https://github.com/google/snappy/archive/refs/tags/1.1.10.tar.gz
+        URL_MD5 70153395ebe6d72febe2cf2e40026a44
+        PATCH_COMMAND patch -p1 < ${TP_DIR}/fix_snappy-Wsign-compare-warning.patch
+        CMAKE_ARGS ${SNAPPY_OPTIONS}
+        BUILD_COMMAND make -j${PARALLEL}
+        INSTALL_COMMAND make install
+        DOWNLOAD_EXTRACT_TIMESTAMP true
+        DOWNLOAD_NO_PROGRESS true
+)
+
+ExternalProject_Add(zstd
+        URL ${OSS_URL_PREFIX}/zstd-1.5.5.tar.gz
+        https://github.com/facebook/zstd/releases/download/v1.5.5/zstd-1.5.5.tar.gz
+        URL_MD5 63251602329a106220e0a5ad26ba656f
+        PATCH_COMMAND ""
+        CONFIGURE_COMMAND cmake build/cmake
+        -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DCMAKE_INSTALL_LIBDIR=lib
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DCMAKE_BUILD_TYPE=Release
+        -DZSTD_BUILD_PROGRAMS=OFF
+        -DZSTD_BUILD_TESTS=OFF
+        -DZSTD_BUILD_CONTRIB=OFF
+        -DZSTD_BUILD_SHARED=OFF
+        -DZSTD_BUILD_STATIC=ON
+        BUILD_COMMAND make -j${PARALLEL}
+        INSTALL_COMMAND make install
+        BUILD_IN_SOURCE 1
+        DOWNLOAD_EXTRACT_TIMESTAMP true
+        DOWNLOAD_NO_PROGRESS true
+)
+
+ExternalProject_Add(lz4
+        URL ${OSS_URL_PREFIX}/lz4-1.9.4.tar.gz
+        https://github.com/lz4/lz4/releases/download/v1.9.4/lz4-1.9.4.tar.gz
+        URL_MD5 e9286adb64040071c5e23498bf753261
+        PATCH_COMMAND ""
+        CONFIGURE_COMMAND cmake build/cmake
+        -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DCMAKE_INSTALL_LIBDIR=lib
+        -DLZ4_POSITION_INDEPENDENT_LIB=ON
+        -DCMAKE_BUILD_TYPE=Release
+        -DLZ4_BUILD_CLI=OFF
+        -DBUILD_SHARED_LIBS=OFF
+        -DBUILD_STATIC_LIBS=ON
+        BUILD_COMMAND make -j${PARALLEL}
+        INSTALL_COMMAND make install
+        BUILD_IN_SOURCE 1
+        DOWNLOAD_EXTRACT_TIMESTAMP true
+        DOWNLOAD_NO_PROGRESS true
+)
+
 option(ROCKSDB_PORTABLE "Minimum CPU arch to support, or 0 = current CPU, 1 = baseline CPU" 0)
 set(ROCKSDB_OPTIONS
         -DFAIL_ON_WARNINGS=OFF
         -DWITH_BENCHMARK_TOOLS=OFF
         -DWITH_TOOLS=OFF
         -DWITH_LZ4=ON
+        -Dlz4_ROOT_DIR=${TP_OUTPUT}
         -DWITH_ZSTD=ON
+        -Dzstd_ROOT_DIR=${TP_OUTPUT}
         -DWITH_SNAPPY=ON
+        -Dsnappy_ROOT_DIR=${TP_OUTPUT}
         -DWITH_BZ2=OFF
         -DWITH_TESTS=OFF
         -DWITH_GFLAGS=OFF
@@ -378,6 +461,8 @@ set(ROCKSDB_OPTIONS
         -DJEMALLOC_ROOT_DIR=${TP_OUTPUT}
         -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
         -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DCMAKE_INSTALL_LIBDIR=lib
         -DPORTABLE=${ROCKSDB_PORTABLE})
 # Link error on MacOS, disable building encfs plugin.
 # See https://github.com/pegasus-kv/encfs/issues/4
@@ -393,9 +478,8 @@ ExternalProject_Add(rocksdb
         PATCH_COMMAND patch -p1 < ${TP_DIR}/fix_rocksdb-cmake-PORTABLE-option.patch
         COMMAND rm -rf ${TP_DIR}/build/Source/rocksdb/plugin/encfs
         COMMAND git clone -b main --depth=1 https://github.com/pegasus-kv/encfs.git ${TP_DIR}/build/Source/rocksdb/plugin/encfs
-        DEPENDS googletest jemalloc
-        CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
-        ${ROCKSDB_OPTIONS}
+        DEPENDS googletest jemalloc lz4 snappy zstd
+        CMAKE_ARGS ${ROCKSDB_OPTIONS}
         DOWNLOAD_EXTRACT_TIMESTAMP true
         DOWNLOAD_NO_PROGRESS true
 )
@@ -412,3 +496,19 @@ ExternalProject_Add(http-parser
         DOWNLOAD_NO_PROGRESS true
 )
 
+ExternalProject_Add(spdlog
+        URL https://github.com/gabime/spdlog/archive/refs/tags/v1.14.1.tar.gz
+        URL_MD5 f2c3f15c20e67b261836ff7bfda302cf
+        PATCH_COMMAND ""
+        CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${TP_OUTPUT}
+        -DSPDLOG_ENABLE_PCH=ON
+        -DSPDLOG_BUILD_PIC=ON
+        -DSPDLOG_FMT_EXTERNAL=ON
+        -DSPDLOG_NO_EXCEPTIONS=ON
+        -Dfmt_DIR=${TP_OUTPUT}/lib/cmake/fmt
+        BUILD_COMMAND make -j${PARALLEL}
+        INSTALL_COMMAND make install
+        DEPENDS fmt
+        DOWNLOAD_EXTRACT_TIMESTAMP true
+        DOWNLOAD_NO_PROGRESS true
+)

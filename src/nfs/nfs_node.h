@@ -32,25 +32,27 @@
 
 #include "aio/aio_task.h"
 #include "common/gpid.h"
+#include "rpc/rpc_host_port.h"
 #include "runtime/api_task.h"
-#include "runtime/rpc/rpc_address.h"
-#include "runtime/task/task_code.h"
+#include "task/task_code.h"
 #include "utils/error_code.h"
 
 namespace dsn {
 class task_tracker;
+
 namespace service {
 class copy_request;
 class copy_response;
 class get_file_size_request;
 class get_file_size_response;
 } // namespace service
+
 template <typename TResponse>
 class rpc_replier;
 
 struct remote_copy_request
 {
-    dsn::rpc_address source;
+    dsn::host_port source;
     std::string source_disk_tag;
     std::string source_dir;
     std::vector<std::string> files;
@@ -67,7 +69,7 @@ public:
     static std::unique_ptr<nfs_node> create();
 
 public:
-    aio_task_ptr copy_remote_directory(const rpc_address &remote,
+    aio_task_ptr copy_remote_directory(const host_port &remote,
                                        const std::string &source_disk_tag,
                                        const std::string &source_dir,
                                        const std::string &dest_disk_tag,
@@ -79,7 +81,7 @@ public:
                                        task_tracker *tracker,
                                        aio_handler &&callback,
                                        int hash = 0);
-    aio_task_ptr copy_remote_files(const rpc_address &remote,
+    aio_task_ptr copy_remote_files(const host_port &remote,
                                    const std::string &source_disk_tag,
                                    const std::string &source_dir,
                                    const std::vector<std::string> &files, // empty for all
@@ -113,4 +115,4 @@ public:
 protected:
     virtual void call(std::shared_ptr<remote_copy_request> rci, aio_task *callback) = 0;
 };
-}
+} // namespace dsn

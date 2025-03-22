@@ -32,15 +32,15 @@
 #include "gtest/gtest.h"
 #include "message_utils.h"
 #include "pegasus_server_test_base.h"
+#include "rpc/rpc_message.h"
 #include "rrdb/rrdb.code.definition.h"
 #include "rrdb/rrdb_types.h"
 #include "runtime/message_utils.h"
-#include "runtime/rpc/rpc_message.h"
-#include "runtime/task/task_code.h"
 #include "server/pegasus_server_write.h"
 #include "server/pegasus_write_service.h"
 #include "server/pegasus_write_service_impl.h"
 #include "server/rocksdb_wrapper.h"
+#include "task/task_code.h"
 #include "utils/blob.h"
 #include "utils/fail_point.h"
 
@@ -215,13 +215,13 @@ public:
         ASSERT_EQ(response.app_id, _gpid.get_app_id());
         ASSERT_EQ(response.partition_index, _gpid.get_partition_index());
         ASSERT_EQ(response.decree, decree);
-        ASSERT_EQ(response.server, _write_svc->_impl->_primary_address);
+        ASSERT_EQ(response.server, _write_svc->_impl->_primary_host_port);
         ASSERT_EQ(_write_svc->_impl->_rocksdb_wrapper->_write_batch->Count(), 0);
         ASSERT_EQ(_write_svc->_impl->_update_responses.size(), 0);
     }
 };
 
-INSTANTIATE_TEST_CASE_P(, pegasus_write_service_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, pegasus_write_service_test, ::testing::Values(false, true));
 
 TEST_P(pegasus_write_service_test, multi_put) { test_multi_put(); }
 

@@ -36,19 +36,20 @@
 #include "utils/flags.h"
 #include "utils/test_macros.h"
 
+DSN_DECLARE_bool(encrypt_data_at_rest);
+
 namespace dsn {
 namespace replication {
 class file_meta;
 } // namespace replication
 } // namespace dsn
 
-DSN_DECLARE_bool(encrypt_data_at_rest);
+#define PRESERVE_VAR(name, expr)                                                                   \
+    const auto PRESERVED_##name = expr;                                                            \
+    auto PRESERVED_##name##_cleanup = dsn::defer([PRESERVED_##name]() { expr = PRESERVED_##name; })
 
 // Save the current value of a flag and restore it at the end of the function.
-#define PRESERVE_FLAG(name)                                                                        \
-    auto PRESERVED_FLAGS_##name = FLAGS_##name;                                                    \
-    auto PRESERVED_FLAGS_##name##_cleanup =                                                        \
-        dsn::defer([PRESERVED_FLAGS_##name]() { FLAGS_##name = PRESERVED_FLAGS_##name; })
+#define PRESERVE_FLAG(name) PRESERVE_VAR(FLAGS_##name, FLAGS_##name)
 
 namespace pegasus {
 

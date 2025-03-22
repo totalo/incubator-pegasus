@@ -20,6 +20,7 @@
 #include "available_detector.h"
 
 #include <fmt/core.h>
+#include <fmt/std.h> // IWYU pragma: keep
 // IWYU pragma: no_include <ext/alloc_traits.h>
 #include <pegasus/error.h>
 #include <stdlib.h>
@@ -31,18 +32,17 @@
 #include <type_traits>
 #include <utility>
 
-#include <fmt/std.h> // IWYU pragma: keep
-
 #include "base/pegasus_key_schema.h"
 #include "client/replication_ddl_client.h"
 #include "common/common.h"
 #include "common/replication_other_types.h"
+#include "dsn.layer2_types.h"
 #include "pegasus/client.h"
 #include "perf_counter/perf_counter.h"
 #include "result_writer.h"
 #include "runtime/api_layer1.h"
-#include "runtime/task/async_calls.h"
-#include "runtime/task/task_code.h"
+#include "task/async_calls.h"
+#include "task/task_code.h"
 #include "utils/blob.h"
 #include "utils/error_code.h"
 #include "utils/flags.h"
@@ -50,11 +50,6 @@
 #include "utils/strings.h"
 #include "utils/threadpool_code.h"
 #include "utils/time_utils.h"
-
-namespace pegasus {
-namespace server {
-
-DEFINE_TASK_CODE(LPC_DETECT_AVAILABLE, TASK_PRIORITY_COMMON, ::dsn::THREAD_POOL_DEFAULT)
 
 DSN_DEFINE_int32(pegasus.collector,
                  available_detect_alert_fail_count,
@@ -82,6 +77,13 @@ DSN_DEFINE_string(pegasus.collector,
                   "",
                   "available detect alert email address, empty means not send email");
 
+DSN_DECLARE_string(server_list);
+
+namespace pegasus {
+namespace server {
+
+DEFINE_TASK_CODE(LPC_DETECT_AVAILABLE, TASK_PRIORITY_COMMON, ::dsn::THREAD_POOL_DEFAULT)
+
 available_detector::available_detector()
     : _client(nullptr),
       _ddl_client(nullptr),
@@ -97,7 +99,7 @@ available_detector::available_detector()
     // initialize information for available_detector.
     _cluster_name = dsn::get_current_cluster_name();
     _meta_list.clear();
-    dsn::replication::replica_helper::load_meta_servers(_meta_list);
+    dsn::replication::replica_helper::parse_server_list(FLAGS_server_list, _meta_list);
     CHECK(!_meta_list.empty(), "");
     // initialize the _client.
     if (!pegasus_client_factory::initialize(nullptr)) {
@@ -258,14 +260,14 @@ void available_detector::report_availability_info()
         std::chrono::minutes(1),
         0,
         std::chrono::minutes(2) // waiting for pegasus finishing start.
-        );
+    );
 }
 
 bool available_detector::generate_hash_keys()
 {
     // get app_id and partition_count.
-    auto err =
-        _ddl_client->list_app(FLAGS_available_detect_app, _app_id, _partition_count, partitions);
+    std::vector<::dsn::partition_configuration> pcs;
+    auto err = _ddl_client->list_app(FLAGS_available_detect_app, _app_id, _partition_count, pcs);
     if (err == ::dsn::ERR_OK && _app_id >= 0) {
         _hash_keys.clear();
         for (auto pidx = 0; pidx < _partition_count; pidx++) {
@@ -324,8 +326,9 @@ void available_detector::on_detect(int32_t idx)
     _recent_minute_detect_times.fetch_add(1);
 
     // define async_get callback function.
-    auto async_get_callback = [this, idx](
-        int err, std::string &&_value, pegasus_client::internal_info &&info) {
+    auto async_get_callback = [this, idx](int err,
+                                          std::string &&_value,
+                                          pegasus_client::internal_info &&info) {
         std::atomic<int> &cnt = (*_fail_count[idx]);
         if (err != PERR_OK) {
             int prev = cnt.fetch_add(1);
@@ -348,10 +351,8 @@ void available_detector::on_detect(int32_t idx)
     };
 
     // define async_set callback function.
-    auto async_set_callback =
-        [ this, idx, user_async_get_callback = std::move(async_get_callback) ](
-            int err, pegasus_client::internal_info &&info)
-    {
+    auto async_set_callback = [this, idx, user_async_get_callback = std::move(async_get_callback)](
+                                  int err, pegasus_client::internal_info &&info) {
         std::atomic<int> &cnt = (*_fail_count[idx]);
         if (err != PERR_OK) {
             int prev = cnt.fetch_add(1);

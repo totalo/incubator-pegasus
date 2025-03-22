@@ -18,19 +18,22 @@
 #include "perf_counter/perf_counter_atomic.h"
 
 #include <boost/asio/basic_deadline_timer.hpp>
-#include <stdlib.h>
+#include <cstdlib>
 #include <functional>
-#include <new>
 
 #include "boost/asio/deadline_timer.hpp"
 #include "boost/asio/detail/impl/epoll_reactor.hpp"
+#include "boost/asio/detail/impl/scheduler.ipp"
+#include "boost/asio/detail/impl/service_registry.hpp"
 #include "boost/asio/detail/impl/timer_queue_ptime.ipp"
+#include "boost/asio/impl/any_io_executor.ipp"
+#include "boost/asio/impl/io_context.hpp"
 #include "boost/date_time/posix_time/posix_time_duration.hpp"
-#include "boost/system/error_code.hpp"
+#include "boost/system/detail/errc.hpp"
+#include "boost/system/detail/error_code.hpp"
+#include "boost/system/detail/error_condition.hpp"
 #include "utils/flags.h"
 #include "utils/shared_io_service.h"
-
-namespace dsn {
 
 DSN_DEFINE_int32(components.pegasus_perf_counter_number_percentile_atomic,
                  counter_computation_interval_seconds,
@@ -38,6 +41,7 @@ DSN_DEFINE_int32(components.pegasus_perf_counter_number_percentile_atomic,
                  "The interval seconds of the system to compute the percentiles of the "
                  "pegasus_perf_counter_number_percentile_atomic counters");
 
+namespace dsn {
 perf_counter_number_percentile_atomic::perf_counter_number_percentile_atomic(
     const char *app,
     const char *section,

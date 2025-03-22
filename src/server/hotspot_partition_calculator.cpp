@@ -21,24 +21,19 @@
 #include <fmt/core.h>
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 #include "client/replication_ddl_client.h"
 #include "common/gpid.h"
 #include "common/serialization_helper/dsn.layer2_types.h"
 #include "perf_counter/perf_counter.h"
-#include "runtime/rpc/rpc_address.h"
+#include "rpc/rpc_host_port.h"
 #include "server/hotspot_partition_stat.h"
 #include "shell/command_executor.h"
 #include "utils/error_code.h"
 #include "utils/fail_point.h"
 #include "utils/flags.h"
 #include "utils/fmt_logging.h"
-#include "absl/strings/string_view.h"
-
-struct row_data;
-
-namespace pegasus {
-namespace server {
 
 DSN_DEFINE_int64(pegasus.collector,
                  max_hotspot_store_size,
@@ -67,6 +62,11 @@ DSN_DEFINE_uint32(pegasus.collector,
                   3,
                   "hot paritiotion occurrence times' threshold to send rpc to detect hotkey");
 DSN_TAG_VARIABLE(occurrence_threshold, FT_MUTABLE);
+
+struct row_data;
+
+namespace pegasus {
+namespace server {
 
 void hotspot_partition_calculator::data_aggregate(const std::vector<row_data> &partition_stats)
 {
@@ -212,33 +212,32 @@ void hotspot_partition_calculator::send_detect_hotkey_request(
     const dsn::replication::hotkey_type::type hotkey_type,
     const dsn::replication::detect_action::type action)
 {
-    FAIL_POINT_INJECT_F("send_detect_hotkey_request", [](absl::string_view) {});
+    FAIL_POINT_INJECT_F("send_detect_hotkey_request", [](std::string_view) {});
 
     int app_id = -1;
     int partition_count = -1;
-    std::vector<dsn::partition_configuration> partitions;
-    _shell_context->ddl_client->list_app(app_name, app_id, partition_count, partitions);
+    std::vector<dsn::partition_configuration> pcs;
+    _shell_context->ddl_client->list_app(app_name, app_id, partition_count, pcs);
 
-    auto target_address = partitions[partition_index].primary;
     dsn::replication::detect_hotkey_response resp;
     dsn::replication::detect_hotkey_request req;
     req.type = hotkey_type;
     req.action = action;
     req.pid = dsn::gpid(app_id, partition_index);
-    auto error = _shell_context->ddl_client->detect_hotkey(target_address, req, resp);
+    auto error =
+        _shell_context->ddl_client->detect_hotkey(pcs[partition_index].hp_primary, req, resp);
 
-    LOG_INFO("{} {} hotkey detection in {}.{}, server address: {}",
+    LOG_INFO("{} {} hotkey detection in {}.{}, server: {}",
              (action == dsn::replication::detect_action::STOP) ? "Stop" : "Start",
              (hotkey_type == dsn::replication::hotkey_type::WRITE) ? "write" : "read",
              app_name,
              partition_index,
-             target_address.to_string());
-
+             FMT_HOST_PORT_AND_IP(pcs[partition_index], primary));
     if (error != dsn::ERR_OK) {
         LOG_ERROR("Hotkey detect rpc sending failed, in {}.{}, error_hint:{}",
                   app_name,
                   partition_index,
-                  error.to_string());
+                  error);
     }
 
     if (resp.err != dsn::ERR_OK) {

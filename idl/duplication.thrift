@@ -17,10 +17,20 @@
 
 include "dsn.thrift"
 include "dsn.layer2.thrift"
+include "utils.thrift"
 
 namespace cpp dsn.replication
 namespace go admin
 namespace java org.apache.pegasus.replication
+
+// Indicate which data of a table needs to be duplicated:
+// * FULL: all of the data of the table needs to be duplicated.
+// * INCREMENTAL: only incremental data of the table would be duplicated.
+enum duplication_mode
+{
+    FULL = 0,
+    INCREMENTAL,
+}
 
 //  - INIT  -> PREPARE
 //  - PREPARE -> APP
@@ -66,6 +76,16 @@ struct duplication_add_request
     // - if false, duplication start state=DS_LOG,
     // server will replay and send plog mutation to follower cluster derectly
     3:optional bool is_duplicating_checkpoint = true;
+
+    // Since v2.6.0.
+    // Specify the app name of remote cluster.
+    4:optional string remote_app_name;
+
+    // Since v2.6.0.
+    // Specify the replica count of remote app.
+    // 0 means that the replica count of the remote app would be the same as
+    // the source app.
+    5:optional i32 remote_replica_count;
 }
 
 struct duplication_add_response
@@ -77,6 +97,26 @@ struct duplication_add_response
     2:i32              appid;
     3:i32              dupid;
     4:optional string  hint;
+
+    // Since v2.6.0.
+    //
+    // If new duplication is created, this would be requested remote_app_name in
+    // duplication_add_request; otherwise, once the duplication has existed, this
+    // would be the remote app name with which the duplication has been created.
+    //
+    // This field could also be used to check if the meta server supports
+    // remote_app_name(i.e. the version of meta server must be >= v2.6.0).
+    5:optional string remote_app_name;
+
+    // Since v2.6.0.
+    //
+    // If new duplication is created, this would be requested remote_replica_count in
+    // duplication_add_request; otherwise, once the duplication has existed, this would
+    // be the remote replica count with which the duplication has been created.
+    //
+    // This field could also be used to check if the meta server supports
+    // remote_replica_count(i.e. the version of meta server must be >= v2.6.0).
+    6:optional i32 remote_replica_count;
 }
 
 // This request is sent from client to meta.
@@ -99,6 +139,16 @@ struct duplication_modify_response
     2:i32              appid;
 }
 
+// The states tracking each partition for duplication.
+struct duplication_partition_state
+{
+    // The max decree of this partition that has been confirmed to be received by follower.
+    1:i64 confirmed_decree;
+
+    // The max decree that has been committed by this partition.
+    2:i64 last_committed_decree;
+}
+
 struct duplication_entry
 {
     1:i32                  dupid;
@@ -106,10 +156,42 @@ struct duplication_entry
     3:string               remote;
     4:i64                  create_ts;
 
-    // partition_index => confirmed decree
+    // Used for syncing duplications with partition-level progress (replica server -> meta server).
+    // partition index => confirmed decree.
     5:optional map<i32, i64> progress;
 
     7:optional duplication_fail_mode fail_mode;
+
+    // Since v2.6.0.
+    // For versions >= v2.6.0, this could be specified by client.
+    // For versions < v2.6.0, this must be the same with source app_name.
+    8:optional string remote_app_name;
+
+    // Since v2.6.0.
+    // For versions >= v2.6.0, this could be specified by client.
+    // For versions < v2.6.0, this must be the same with source replica_count.
+    9:optional i32 remote_replica_count;
+
+    // TODO(wangdan): would be supported later.
+    10:optional duplication_mode mode;
+
+    // Used for listing duplications with partition-level details (client -> meta server).
+    // partition index => partition states.
+    11:optional map<i32, duplication_partition_state> partition_states;
+}
+
+// States for the duplications of a table.
+struct duplication_app_state
+{
+    1:i32                               appid;
+
+    // dup id => per-duplication properties
+    2:map<i32, duplication_entry>       duplications;
+
+    3:string                            app_name;
+
+    // The number of partitions for this table.
+    4:i32                               partition_count;
 }
 
 // This request is sent from client to meta.
@@ -132,6 +214,10 @@ struct duplication_confirm_entry
     1:i32       dupid;
     2:i64       confirmed_decree;
     3:optional bool checkpoint_prepared = false;
+
+    // Last committed decree from the primary replica of each partition, collected by
+    // meta server and used to be compared with duplicating progress of follower table.
+    4:optional i64 last_committed_decree;
 }
 
 // This is an internal RPC sent from replica server to meta.
@@ -150,6 +236,7 @@ struct duplication_sync_request
     1:dsn.rpc_address                                   node;
 
     2:map<dsn.gpid, list<duplication_confirm_entry>>    confirm_list;
+    3:dsn.host_port                                     hp_node;
 }
 
 struct duplication_sync_response
@@ -161,4 +248,22 @@ struct duplication_sync_response
     // appid -> map<dupid, dup_entry>
     // this rpc will not return the apps that were not assigned duplication.
     2:map<i32, map<i32, duplication_entry>>            dup_map;
+}
+
+// This request is sent from client to meta server, to list duplications with their
+// per-duplication info and progress of each partition for one or multiple tables.
+struct duplication_list_request
+{
+    // The pattern is used to match an app name, whose type is specified by `match_type`.
+    1:string                            app_name_pattern;
+    2:utils.pattern_match_type          match_type;
+}
+
+struct duplication_list_response
+{
+    1:dsn.error_code                        err;
+    2:string                                hint_message;
+
+    // app name => duplications owned by an app
+    3:map<string, duplication_app_state>    app_states;
 }

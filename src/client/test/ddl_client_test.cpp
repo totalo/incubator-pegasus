@@ -19,25 +19,46 @@
 #include <stdint.h>
 #include <deque>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "client/replication_ddl_client.h"
 #include "common/replication.codes.h"
 #include "gtest/gtest.h"
 #include "meta_admin_types.h"
+#include "rpc/rpc_host_port.h"
 #include "runtime/api_layer1.h"
-#include "runtime/rpc/rpc_address.h"
-#include "runtime/task/task.h"
-#include "utils/autoref_ptr.h"
 #include "utils/error_code.h"
+#include "utils/errors.h"
 #include "utils/fail_point.h"
 #include "utils/flags.h"
+#include "utils/fmt_logging.h"
 
 DSN_DECLARE_uint32(ddl_client_max_attempt_count);
 DSN_DECLARE_uint32(ddl_client_retry_interval_ms);
 
 namespace dsn {
 namespace replication {
+
+TEST(DDLClientTest, ValidateAppName)
+{
+    struct test_case
+    {
+        std::string app_name;
+        bool valid;
+    } tests[] = {{"", false},
+                 {"abc!", false},
+                 {"abc-", false},
+                 {"abc@", false},
+                 {"abc", true},
+                 {"abc1", true},
+                 {"abc_", true},
+                 {"abc.", true},
+                 {"abc:", true}};
+    for (const auto &test : tests) {
+        CHECK_EQ(test.valid, replication_ddl_client::validate_app_name(test.app_name).is_ok());
+    }
+}
 
 TEST(DDLClientTest, RetryMetaRequest)
 {
@@ -103,7 +124,7 @@ TEST(DDLClientTest, RetryMetaRequest)
          dsn::ERR_BUSY_CREATING},
     };
 
-    std::vector<rpc_address> meta_list = {{"127.0.0.1", 34601}};
+    const std::vector<host_port> meta_list = {host_port("localhost", 34601)};
     auto req = std::make_shared<configuration_create_app_request>();
     for (const auto &test : tests) {
         fail::setup();
@@ -123,7 +144,8 @@ TEST(DDLClientTest, RetryMetaRequest)
         resp.err = ERR_UNKNOWN;
 
         auto start_ms = dsn_now_ms();
-        auto resp_task = ddl_client->request_meta_and_wait_response(RPC_CM_CREATE_APP, req, resp);
+        const auto &req_result =
+            ddl_client->request_meta_and_wait_response(RPC_CM_CREATE_APP, req, resp);
         uint64_t duration_ms = dsn_now_ms() - start_ms;
 
         // Check if all the errors have been traversed in sequence and accepted except the last
@@ -134,7 +156,7 @@ TEST(DDLClientTest, RetryMetaRequest)
         EXPECT_LE(test.expected_sleep_ms, duration_ms);
 
         // Check if final send error is matched.
-        EXPECT_EQ(test.final_send_error, resp_task->error());
+        EXPECT_EQ(test.final_send_error, req_result.code());
 
         // Check if final response error is matched.
         EXPECT_EQ(test.final_resp_error, resp.err);

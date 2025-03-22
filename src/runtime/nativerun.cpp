@@ -31,14 +31,14 @@
 #include <vector>
 
 #include "runtime/global_config.h"
-#include "runtime/task/task_spec.h"
+#include "task/task_spec.h"
 #include "utils/flags.h"
 #include "utils/threadpool_spec.h"
 
+DSN_DECLARE_bool(enable_udp);
+
 namespace dsn {
 namespace tools {
-
-DSN_DECLARE_bool(enable_udp);
 
 void nativerun::install(service_spec &spec)
 {

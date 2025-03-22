@@ -18,8 +18,10 @@
  */
 
 #include <fmt/core.h>
+#include <unistd.h>
 #include <chrono>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
@@ -30,8 +32,7 @@
 #include "gtest/gtest.h"
 #include "include/pegasus/client.h"
 #include "pegasus/error.h"
-#include "runtime/rpc/rpc_address.h"
-#include "test/function_test/utils/global_env.h"
+#include "rpc/rpc_host_port.h"
 #include "test/function_test/utils/test_util.h"
 #include "utils/error_code.h"
 #include "utils/rand.h"
@@ -65,13 +66,19 @@ protected:
     }
 
 public:
-    std::vector<dsn::rpc_address> get_rpc_address_list(const std::vector<int> ports)
+    // The cluster name "single_master_cluster" (see src/test/function_test/config.ini) means the
+    // cluster has only one meta server, while "onebox" means the cluster has 3 meta servers.
+    recovery_test() : test_util(std::map<std::string, std::string>(), "single_master_cluster") {}
+
+    std::vector<dsn::host_port> get_rpc_host_port_list(const std::vector<int> ports)
     {
-        std::vector<dsn::rpc_address> result;
+        std::vector<dsn::host_port> result;
         result.reserve(ports.size());
-        for (const int &p : ports) {
-            dsn::rpc_address address(global_env::instance()._host_ip.c_str(), p);
-            result.push_back(address);
+        for (const auto &port : ports) {
+            char hostname[1024];
+            gethostname(hostname, 1024);
+            dsn::host_port hp(hostname, port);
+            result.push_back(hp);
         }
         return result;
     }
@@ -182,7 +189,7 @@ TEST_F(recovery_test, recovery)
         std::this_thread::sleep_for(std::chrono::seconds(10));
 
         // then do recovery
-        auto nodes = get_rpc_address_list({34801, 34802, 34803});
+        auto nodes = get_rpc_host_port_list({34801, 34802, 34803});
         ASSERT_EQ(dsn::ERR_OK, ddl_client_->do_recovery(nodes, 30, false, false, std::string()));
 
         // send another recovery command
@@ -191,7 +198,7 @@ TEST_F(recovery_test, recovery)
 
         // then wait the apps to ready
         ASSERT_EQ(dsn::ERR_OK,
-                  ddl_client_->create_app(app_name_, "pegasus", partition_count_, 3, {}, false));
+                  ddl_client_->create_app(table_name_, "pegasus", partition_count_, 3, {}, false));
 
         ASSERT_NO_FATAL_FAILURE(verify_data(dataset_count));
     }
@@ -211,12 +218,12 @@ TEST_F(recovery_test, recovery)
         std::this_thread::sleep_for(std::chrono::seconds(10));
 
         // recovery only from 1 & 2
-        std::vector<dsn::rpc_address> nodes = get_rpc_address_list({34801, 34802});
+        auto nodes = get_rpc_host_port_list({34801, 34802});
         ASSERT_EQ(dsn::ERR_OK, ddl_client_->do_recovery(nodes, 30, false, false, std::string()));
 
         // then wait the app to ready
         ASSERT_EQ(dsn::ERR_OK,
-                  ddl_client_->create_app(app_name_, "pegasus", partition_count_, 3, {}, false));
+                  ddl_client_->create_app(table_name_, "pegasus", partition_count_, 3, {}, false));
 
         ASSERT_NO_FATAL_FAILURE(verify_data(dataset_count));
     }
@@ -242,12 +249,14 @@ TEST_F(recovery_test, recovery)
         std::this_thread::sleep_for(std::chrono::seconds(10));
 
         // then do recovery
-        auto nodes = get_rpc_address_list({34801, 34802, 34803});
+        auto nodes = get_rpc_host_port_list({34801, 34802, 34803});
         ASSERT_EQ(dsn::ERR_OK, ddl_client_->do_recovery(nodes, 30, false, false, std::string()));
+
+        ASSERT_NO_FATAL_FAILURE(wait_table_healthy(table_name_));
 
         // then wait the apps to ready
         ASSERT_EQ(dsn::ERR_OK,
-                  ddl_client_->create_app(app_name_, "pegasus", partition_count_, 3, {}, false));
+                  ddl_client_->create_app(table_name_, "pegasus", partition_count_, 3, {}, false));
 
         ASSERT_NO_FATAL_FAILURE(verify_data(dataset_count));
     }
@@ -272,12 +281,12 @@ TEST_F(recovery_test, recovery)
         std::this_thread::sleep_for(std::chrono::seconds(10));
 
         // then do recovery
-        auto nodes = get_rpc_address_list({34801, 34802, 34803});
+        auto nodes = get_rpc_host_port_list({34801, 34802, 34803});
         ASSERT_EQ(dsn::ERR_OK, ddl_client_->do_recovery(nodes, 30, false, false, std::string()));
 
         // then wait the apps to ready
         ASSERT_EQ(dsn::ERR_OK,
-                  ddl_client_->create_app(app_name_, "pegasus", partition_count_, 3, {}, false));
+                  ddl_client_->create_app(table_name_, "pegasus", partition_count_, 3, {}, false));
 
         ASSERT_NO_FATAL_FAILURE(verify_data(dataset_count));
     }

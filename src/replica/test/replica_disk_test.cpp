@@ -41,7 +41,7 @@
 #include "replica_admin_types.h"
 #include "replica_disk_test_base.h"
 #include "runtime/api_layer1.h"
-#include "runtime/rpc/rpc_holder.h"
+#include "rpc/rpc_holder.h"
 #include "test_util/test_util.h"
 #include "utils/autoref_ptr.h"
 #include "utils/error_code.h"
@@ -49,11 +49,12 @@
 #include "utils/flags.h"
 #include "utils/fmt_logging.h"
 
+DSN_DECLARE_bool(fd_disabled);
+
 using pegasus::AssertEventually;
 
 namespace dsn {
 namespace replication {
-DSN_DECLARE_bool(fd_disabled);
 
 using query_disk_info_rpc = rpc_holder<query_disk_info_request, query_disk_info_response>;
 
@@ -86,7 +87,7 @@ public:
     }
 };
 
-INSTANTIATE_TEST_CASE_P(, replica_disk_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, replica_disk_test, ::testing::Values(false, true));
 
 TEST_P(replica_disk_test, on_query_disk_info_all_app)
 {

@@ -17,27 +17,48 @@
 
 #include "utils/metrics.h"
 
-#include <absl/strings/string_view.h>
+#include <boost/algorithm/string/join.hpp>
 #include <boost/asio/basic_deadline_timer.hpp>
+#include <boost/asio/detail/impl/scheduler.ipp>
+#include <boost/asio/detail/impl/service_registry.hpp>
+#include <boost/asio/impl/any_io_executor.ipp>
+#include <boost/asio/impl/io_context.hpp>
 #include <boost/date_time/posix_time/posix_time_duration.hpp>
-#include <boost/system/error_code.hpp>
+#include <boost/system/detail/errc.hpp>
+#include <boost/system/detail/error_code.hpp>
 #include <fmt/core.h>
-#include <new>
+#include <unistd.h>
+#include <string_view>
 
 #include "http/http_method.h"
+#include "http/http_status_code.h"
+#include "rpc/rpc_engine.h"
+#include "rpc/rpc_host_port.h"
 #include "runtime/api_layer1.h"
+#include "runtime/service_app.h"
+#include "runtime/service_engine.h"
+#include "task/task.h"
 #include "utils/flags.h"
 #include "utils/rand.h"
 #include "utils/shared_io_service.h"
-#include "utils/string_conv.h"
 #include "utils/strings.h"
-
-namespace dsn {
 
 DSN_DEFINE_uint64(metrics,
                   entity_retirement_delay_ms,
                   10 * 60 * 1000,
-                  "The retention internal (milliseconds) for an entity after it becomes stale.");
+                  "The retention interval (milliseconds) for an entity after it becomes stale.");
+
+DSN_DECLARE_string(cluster_name);
+
+METRIC_DEFINE_entity(server);
+
+dsn::metric_entity_ptr server_metric_entity()
+{
+    static auto entity = METRIC_ENTITY_server.instantiate("server");
+    return entity;
+}
+
+namespace dsn {
 
 metric_entity::metric_entity(const metric_entity_prototype *prototype,
                              const std::string &id,
@@ -215,6 +236,32 @@ void metric_filters::extract_entity_metrics(const metric_entity::metric_map &can
     }
 }
 
+std::string metric_filters::to_query_string() const
+{
+#define COMBINE_FIELD_PAIR(name, container)                                                        \
+    do {                                                                                           \
+        if (container.empty()) {                                                                   \
+            break;                                                                                 \
+        }                                                                                          \
+                                                                                                   \
+        std::string pair(#name);                                                                   \
+        pair += '=';                                                                               \
+        pair += boost::join(container, ",");                                                       \
+        fields.push_back(std::move(pair));                                                         \
+    } while (0)
+
+    std::vector<std::string> fields;
+    COMBINE_FIELD_PAIR(with_metric_fields, with_metric_fields);
+    COMBINE_FIELD_PAIR(types, entity_types);
+    COMBINE_FIELD_PAIR(ids, entity_ids);
+    COMBINE_FIELD_PAIR(attributes, entity_attrs);
+    COMBINE_FIELD_PAIR(metrics, entity_metrics);
+
+#undef COMBINE_FIELD_PAIR
+
+    return boost::join(fields, "&");
+}
+
 metric_entity_ptr metric_entity_prototype::instantiate(const std::string &id,
                                                        const metric_entity::attr_map &attrs) const
 {
@@ -230,14 +277,22 @@ metric_entity_prototype::metric_entity_prototype(const char *name) : _name(name)
 
 metric_entity_prototype::~metric_entity_prototype() {}
 
+const std::string metrics_http_service::kMetricsRootPath("");
+const std::string metrics_http_service::kMetricsQuerySubPath("metrics");
+const std::string
+    metrics_http_service::kMetricsQueryPath('/' + metrics_http_service::kMetricsQuerySubPath);
+
 metrics_http_service::metrics_http_service(metric_registry *registry) : _registry(registry)
 {
-    register_handler("metrics",
+    register_handler(kMetricsQuerySubPath,
                      std::bind(&metrics_http_service::get_metrics_handler,
                                this,
                                std::placeholders::_1,
                                std::placeholders::_2),
-                     "ip:port/metrics");
+                     "[with_metric_fields=field1,field2,...][&types=type1,type2,...][&ids=id1,id2,."
+                     "..][&attributes=attr1,value1,attr2,value2,...][&metrics=metric1,metric2,...]["
+                     "&detail=true|false]"
+                     "Query the node metrics.");
 }
 
 namespace {
@@ -279,7 +334,7 @@ void metrics_http_service::get_metrics_handler(const http_request &req, http_res
 {
     if (req.method != http_method::GET) {
         resp.body = encode_error_as_json("please use 'GET' method while querying for metrics");
-        resp.status_code = http_status_code::bad_request;
+        resp.status_code = http_status_code::kBadRequest;
         return;
     }
 
@@ -300,7 +355,7 @@ void metrics_http_service::get_metrics_handler(const http_request &req, http_res
                 resp.body =
                     encode_error_as_json("the number of arguments for attributes should be even, "
                                          "since each attribute name always pairs with a value");
-                resp.status_code = http_status_code::bad_request;
+                resp.status_code = http_status_code::kBadRequest;
                 return;
             }
         } else if (field.first == "metrics") {
@@ -309,13 +364,13 @@ void metrics_http_service::get_metrics_handler(const http_request &req, http_res
             if (!buf2bool(field.second, detail)) {
                 resp.body = encode_error_as_json("the value of detail should be a boolean value, "
                                                  "i.e. true or false");
-                resp.status_code = http_status_code::bad_request;
+                resp.status_code = http_status_code::kBadRequest;
                 return;
             }
         } else {
             auto error_message = fmt::format("unknown field {}={}", field.first, field.second);
             resp.body = encode_error_as_json(error_message.c_str());
-            resp.status_code = http_status_code::bad_request;
+            resp.status_code = http_status_code::kBadRequest;
             return;
         }
     }
@@ -327,7 +382,7 @@ void metrics_http_service::get_metrics_handler(const http_request &req, http_res
     }
 
     resp.body = take_snapshot_as_json(_registry, filters);
-    resp.status_code = http_status_code::ok;
+    resp.status_code = http_status_code::kOk;
 }
 
 metric_registry::metric_registry() : _http_service(this)
@@ -401,17 +456,6 @@ metric_registry::entity_map metric_registry::entities() const
     return _entities;
 }
 
-void metric_registry::take_snapshot(metric_json_writer &writer, const metric_filters &filters) const
-{
-    utils::auto_read_lock l(_lock);
-
-    writer.StartArray();
-    for (const auto &entity : _entities) {
-        entity.second->take_snapshot(writer, filters);
-    }
-    writer.EndArray();
-}
-
 metric_entity_ptr metric_registry::find_or_create_entity(const metric_entity_prototype *prototype,
                                                          const std::string &id,
                                                          const metric_entity::attr_map &attrs)
@@ -440,11 +484,94 @@ metric_entity_ptr metric_registry::find_or_create_entity(const metric_entity_pro
     return entity;
 }
 
+namespace {
+
+#define ENCODE_OBJ_VAL(cond, val)                                                                  \
+    do {                                                                                           \
+        if (dsn_likely(cond)) {                                                                    \
+            dsn::json::json_encode(writer, val);                                                   \
+        } else {                                                                                   \
+            dsn::json::json_encode(writer, "unknown");                                             \
+        }                                                                                          \
+    } while (0)
+
+void encode_cluster(dsn::metric_json_writer &writer)
+{
+    writer.Key(dsn::kMetricClusterField.c_str());
+
+    ENCODE_OBJ_VAL(!utils::is_empty(FLAGS_cluster_name), FLAGS_cluster_name);
+}
+
+void encode_role(dsn::metric_json_writer &writer)
+{
+    writer.Key(dsn::kMetricRoleField.c_str());
+
+    const auto *const node = dsn::task::get_current_node2();
+    ENCODE_OBJ_VAL(node != nullptr, node->get_service_app_info().full_name);
+}
+
+void encode_host(dsn::metric_json_writer &writer)
+{
+    writer.Key(dsn::kMetricHostField.c_str());
+
+    char hostname[1024];
+    ENCODE_OBJ_VAL(gethostname(hostname, sizeof(hostname)) == 0, hostname);
+}
+
+void encode_port(dsn::metric_json_writer &writer)
+{
+    writer.Key(dsn::kMetricPortField.c_str());
+
+    const auto *const rpc = dsn::task::get_current_rpc2();
+    ENCODE_OBJ_VAL(rpc != nullptr, rpc->primary_host_port().port());
+}
+
+void encode_timestamp_ns(dsn::metric_json_writer &writer)
+{
+    writer.Key(dsn::kMetricTimestampNsField.c_str());
+
+    ENCODE_OBJ_VAL(true, dsn_now_ns());
+}
+
+#undef ENCODE_OBJ_VAL
+
+} // anonymous namespace
+
+void metric_registry::encode_entities(metric_json_writer &writer,
+                                      const metric_filters &filters) const
+{
+    writer.Key(dsn::kMetricEntitiesField.c_str());
+
+    writer.StartArray();
+
+    {
+        utils::auto_read_lock l(_lock);
+
+        for (const auto &entity : _entities) {
+            entity.second->take_snapshot(writer, filters);
+        }
+    }
+
+    writer.EndArray();
+}
+
+void metric_registry::take_snapshot(metric_json_writer &writer, const metric_filters &filters) const
+{
+    writer.StartObject();
+    encode_cluster(writer);
+    encode_role(writer);
+    encode_host(writer);
+    encode_port(writer);
+    encode_timestamp_ns(writer);
+    encode_entities(writer, filters);
+    writer.EndObject();
+}
+
 metric_registry::collected_entities_info metric_registry::collect_stale_entities() const
 {
     collected_entities_info collected_info;
 
-    auto now = dsn_now_ms();
+    const auto now = dsn_now_ms();
 
     utils::auto_read_lock l(_lock);
 
@@ -483,7 +610,7 @@ metric_registry::retire_stale_entities(const collected_entity_list &collected_en
 
     retired_entities_stat retired_stat;
 
-    auto now = dsn_now_ms();
+    const auto now = dsn_now_ms();
 
     utils::auto_write_lock l(_lock);
 

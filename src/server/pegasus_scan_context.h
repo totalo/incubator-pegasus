@@ -25,7 +25,6 @@
 #include "utils/rand.h"
 #include <rrdb/rrdb_types.h>
 
-#include "base/pegasus_const.h"
 #include "base/pegasus_utils.h"
 
 namespace pegasus {
@@ -71,6 +70,10 @@ private:
     std::string _sort_key_filter_pattern_holder;
 
 public:
+    static const int SCAN_CONTEXT_ID_VALID_MIN = 0;
+    static const int SCAN_CONTEXT_ID_COMPLETED = -1;
+    static const int SCAN_CONTEXT_ID_NOT_EXIST = -2;
+
     std::unique_ptr<rocksdb::Iterator> iterator;
     rocksdb::Slice stop;
     bool stop_inclusive;
@@ -135,5 +138,5 @@ private:
     std::unordered_map<int64_t, std::unique_ptr<pegasus_scan_context>> _map;
     ::dsn::utils::ex_lock_nr_spin _lock;
 };
-}
-}
+} // namespace server
+} // namespace pegasus

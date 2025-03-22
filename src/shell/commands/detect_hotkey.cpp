@@ -24,12 +24,13 @@
 #include "client/replication_ddl_client.h"
 #include "common/gpid.h"
 #include "replica_admin_types.h"
-#include "runtime/rpc/rpc_address.h"
+#include "rpc/rpc_host_port.h"
 #include "shell/argh.h"
 #include "shell/command_executor.h"
 #include "shell/command_utils.h"
 #include "shell/commands.h"
 #include "utils/error_code.h"
+#include "utils/errors.h"
 #include "utils/string_conv.h"
 #include "utils/strings.h"
 
@@ -72,19 +73,24 @@ bool detect_hotkey(command_executor *e, shell_context *sc, arguments args)
     // detect_hotkey
     // <-a|--app_id str><-p|--partition_index num><-t|--hotkey_type read|write>
     // <-c|--detect_action start|stop|query><-d|--address str>
-    const std::set<std::string> params = {"a",
-                                          "app_id",
-                                          "p",
-                                          "partition_index",
-                                          "c",
-                                          "hotkey_action",
-                                          "t",
-                                          "hotkey_type",
-                                          "d",
-                                          "address"};
-    const std::set<std::string> flags = {};
+    static const std::set<std::string> params = {"a",
+                                                 "app_id",
+                                                 "p",
+                                                 "partition_index",
+                                                 "c",
+                                                 "hotkey_action",
+                                                 "t",
+                                                 "hotkey_type",
+                                                 "d",
+                                                 "address"};
+    static const std::set<std::string> flags = {};
+
     argh::parser cmd(args.argc, args.argv, argh::parser::PREFER_PARAM_FOR_UNREG_OPTION);
-    if (!validate_cmd(cmd, params, flags)) {
+
+    const auto &check = validate_cmd(cmd, params, flags);
+    if (!check) {
+        // TODO(wangdan): use SHELL_PRINT* macros instead.
+        fmt::print(stderr, "{}\n", check.description());
         return false;
     }
 
@@ -100,10 +106,10 @@ bool detect_hotkey(command_executor *e, shell_context *sc, arguments args)
         return false;
     }
 
-    dsn::rpc_address target_address;
+    dsn::host_port target_hp;
     std::string err_info;
-    std::string ip_str = cmd({"-d", "--address"}).str();
-    if (!validate_ip(sc, ip_str, target_address, err_info)) {
+    const auto &target_hp_str = cmd({"-d", "--address"}).str();
+    if (!validate_ip(sc, target_hp_str, target_hp, err_info)) {
         fmt::print(stderr, "{}\n", err_info);
         return false;
     }
@@ -118,7 +124,7 @@ bool detect_hotkey(command_executor *e, shell_context *sc, arguments args)
     }
 
     detect_hotkey_response resp;
-    auto err = sc->ddl_client->detect_hotkey(dsn::rpc_address(target_address), req, resp);
+    auto err = sc->ddl_client->detect_hotkey(target_hp, req, resp);
     if (err != dsn::ERR_OK) {
         fmt::print(stderr,
                    "Hotkey detection rpc sending failed, in {}.{}, error_hint:{}\n",
@@ -145,7 +151,7 @@ bool detect_hotkey(command_executor *e, shell_context *sc, arguments args)
                    app_id,
                    partition_index,
                    hotkey_type,
-                   ip_str);
+                   target_hp_str);
         break;
     case dsn::replication::detect_action::STOP:
         fmt::print("Hotkey detection is stopped now\n");

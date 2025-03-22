@@ -28,19 +28,19 @@
 #include <string>
 #include <utility>
 
+#include "common/replica_envs.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
-#include "pegasus_const.h"
 #include "pegasus_server_test_base.h"
-#include "perf_counter/perf_counter.h"
-#include "perf_counter/perf_counter_wrapper.h"
 #include "rrdb/rrdb.code.definition.h"
 #include "rrdb/rrdb_types.h"
 #include "runtime/serverlet.h"
 #include "server/pegasus_read_service.h"
+#include "utils/autoref_ptr.h"
 #include "utils/blob.h"
 #include "utils/error_code.h"
 #include "utils/filesystem.h"
+#include "utils/metrics.h"
 
 namespace pegasus {
 namespace server {
@@ -52,13 +52,13 @@ public:
 
     void test_table_level_slow_query()
     {
-        // the on_get function will sleep 10ms for unit test,
-        // so when we set slow_query_threshold <= 10ms, the perf counter will be incr by 1
+        // The function `on_get` will sleep 10ms for the unit test. Thus when we set
+        // slow_query_threshold <= 10ms, the metric `abnormal_read_requests` will increment by 1.
         struct test_case
         {
             bool is_multi_get; // false-on_get, true-on_multi_get
             uint64_t slow_query_threshold_ms;
-            uint8_t expect_perf_counter_incr;
+            uint8_t expected_incr;
         } tests[] = {{false, 10, 1}, {false, 300, 0}, {true, 10, 1}, {true, 300, 0}};
 
         // test key
@@ -72,11 +72,12 @@ public:
             // set table level slow query threshold
             std::map<std::string, std::string> envs;
             _server->query_app_envs(envs);
-            envs[ROCKSDB_ENV_SLOW_QUERY_THRESHOLD] = std::to_string(test.slow_query_threshold_ms);
+            envs[dsn::replica_envs::SLOW_QUERY_THRESHOLD] =
+                std::to_string(test.slow_query_threshold_ms);
             _server->update_app_envs(envs);
 
             // do on_get/on_multi_get operation,
-            long before_count = _server->_pfc_recent_abnormal_count->get_integer_value();
+            auto before_count = _server->METRIC_VAR_VALUE(abnormal_read_requests);
             if (!test.is_multi_get) {
                 get_rpc rpc(std::make_unique<dsn::blob>(test_key), dsn::apps::RPC_RRDB_RRDB_GET);
                 _server->on_get(rpc);
@@ -89,9 +90,9 @@ public:
                                   dsn::apps::RPC_RRDB_RRDB_MULTI_GET);
                 _server->on_multi_get(rpc);
             }
-            long after_count = _server->_pfc_recent_abnormal_count->get_integer_value();
+            auto after_count = _server->METRIC_VAR_VALUE(abnormal_read_requests);
 
-            ASSERT_EQ(before_count + test.expect_perf_counter_incr, after_count);
+            ASSERT_EQ(before_count + test.expected_incr, after_count);
         }
     }
 
@@ -103,7 +104,8 @@ public:
             std::string env_value;
             std::string expect_value;
         } tests[] = {
-            {"rocksdb.num_levels", "5", "5"}, {"rocksdb.write_buffer_size", "33554432", "33554432"},
+            {"rocksdb.num_levels", "5", "5"},
+            {"rocksdb.write_buffer_size", "33554432", "33554432"},
         };
 
         std::map<std::string, std::string> all_test_envs;
@@ -113,10 +115,10 @@ public:
             for (const auto &test : tests) {
                 all_test_envs[test.env_key] = test.env_value;
             }
-            for (const auto &option : pegasus::ROCKSDB_DYNAMIC_OPTIONS) {
+            for (const auto &option : dsn::replica_envs::ROCKSDB_DYNAMIC_OPTIONS) {
                 ASSERT_TRUE(all_test_envs.find(option) != all_test_envs.end());
             }
-            for (const auto &option : pegasus::ROCKSDB_STATIC_OPTIONS) {
+            for (const auto &option : dsn::replica_envs::ROCKSDB_STATIC_OPTIONS) {
                 ASSERT_TRUE(all_test_envs.find(option) != all_test_envs.end());
             }
         }
@@ -140,7 +142,7 @@ public:
     }
 };
 
-INSTANTIATE_TEST_CASE_P(, pegasus_server_impl_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, pegasus_server_impl_test, ::testing::Values(false, true));
 
 TEST_P(pegasus_server_impl_test, test_table_level_slow_query)
 {
@@ -158,17 +160,18 @@ TEST_P(pegasus_server_impl_test, test_open_db_with_latest_options)
 {
     // open a new db with no app env.
     ASSERT_EQ(dsn::ERR_OK, start());
-    ASSERT_EQ(ROCKSDB_ENV_USAGE_SCENARIO_NORMAL, _server->_usage_scenario);
+    ASSERT_EQ(dsn::replica_envs::ROCKSDB_ENV_USAGE_SCENARIO_NORMAL, _server->_usage_scenario);
     // set bulk_load scenario for the db.
-    ASSERT_TRUE(_server->set_usage_scenario(ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD));
-    ASSERT_EQ(ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD, _server->_usage_scenario);
+    ASSERT_TRUE(
+        _server->set_usage_scenario(dsn::replica_envs::ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD));
+    ASSERT_EQ(dsn::replica_envs::ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD, _server->_usage_scenario);
     rocksdb::Options opts = _server->_db->GetOptions();
     ASSERT_EQ(1000000000, opts.level0_file_num_compaction_trigger);
     ASSERT_EQ(true, opts.disable_auto_compactions);
     // reopen the db.
     ASSERT_EQ(dsn::ERR_OK, _server->stop(false));
     ASSERT_EQ(dsn::ERR_OK, start());
-    ASSERT_EQ(ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD, _server->_usage_scenario);
+    ASSERT_EQ(dsn::replica_envs::ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD, _server->_usage_scenario);
     ASSERT_EQ(opts.level0_file_num_compaction_trigger,
               _server->_db->GetOptions().level0_file_num_compaction_trigger);
     ASSERT_EQ(opts.disable_auto_compactions, _server->_db->GetOptions().disable_auto_compactions);
@@ -177,9 +180,10 @@ TEST_P(pegasus_server_impl_test, test_open_db_with_latest_options)
 TEST_P(pegasus_server_impl_test, test_open_db_with_app_envs)
 {
     std::map<std::string, std::string> envs;
-    envs[ROCKSDB_ENV_USAGE_SCENARIO_KEY] = ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD;
+    envs[dsn::replica_envs::ROCKSDB_USAGE_SCENARIO] =
+        dsn::replica_envs::ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD;
     ASSERT_EQ(dsn::ERR_OK, start(envs));
-    ASSERT_EQ(ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD, _server->_usage_scenario);
+    ASSERT_EQ(dsn::replica_envs::ROCKSDB_ENV_USAGE_SCENARIO_BULK_LOAD, _server->_usage_scenario);
 }
 
 TEST_P(pegasus_server_impl_test, test_open_db_with_rocksdb_envs)
@@ -219,7 +223,7 @@ TEST_P(pegasus_server_impl_test, test_update_user_specified_compaction)
     ASSERT_EQ("", _server->_user_specified_compaction);
 
     std::string user_specified_compaction = "test";
-    envs[USER_SPECIFIED_COMPACTION] = user_specified_compaction;
+    envs[dsn::replica_envs::USER_SPECIFIED_COMPACTION] = user_specified_compaction;
     _server->update_user_specified_compaction(envs);
     ASSERT_EQ(user_specified_compaction, _server->_user_specified_compaction);
 }

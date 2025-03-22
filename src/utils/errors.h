@@ -33,7 +33,7 @@
 #include "utils/fmt_logging.h"
 #include "utils/fmt_utils.h"
 #include "utils/ports.h"
-#include "absl/strings/string_view.h"
+#include <string_view>
 
 namespace dsn {
 
@@ -64,15 +64,19 @@ public:
     error_s(const error_s &rhs) noexcept { copy(rhs); }
     error_s &operator=(const error_s &rhs) noexcept
     {
+        if (this == &rhs) {
+            return *this;
+        }
+
         copy(rhs);
-        return (*this);
+        return *this;
     }
 
     // movable
-    error_s(error_s &&rhs) noexcept = default;
+    error_s(error_s &&) noexcept = default;
     error_s &operator=(error_s &&) noexcept = default;
 
-    static error_s make(error_code code, absl::string_view reason) { return error_s(code, reason); }
+    static error_s make(error_code code, std::string_view reason) { return {code, reason}; }
 
     static error_s make(error_code code)
     {
@@ -103,11 +107,18 @@ public:
         if (!_info) {
             return ERR_OK.to_string();
         }
-        std::string code = _info->code.to_string();
-        return _info->msg.empty() ? code : code + ": " + _info->msg;
+
+        std::string msg(_info->code.to_string());
+        if (!_info->msg.empty()) {
+            fmt::format_to(std::back_inserter(msg), ": {}", _info->msg);
+        }
+
+        return msg;
     }
 
-    error_code code() const { return _info ? error_code(_info->code) : ERR_OK; }
+    [[nodiscard]] error_code code() const { return _info ? _info->code : ERR_OK; }
+
+    [[nodiscard]] std::string message() const { return _info ? _info->msg : ""; }
 
     error_s &operator<<(const char str[])
     {
@@ -136,7 +147,7 @@ public:
         return os << s.description();
     }
 
-    friend bool operator==(const error_s lhs, const error_s &rhs)
+    friend bool operator==(const error_s &lhs, const error_s &rhs)
     {
         if (lhs._info && rhs._info) {
             return lhs._info->code == rhs._info->code && lhs._info->msg == rhs._info->msg;
@@ -145,14 +156,17 @@ public:
     }
 
 private:
-    error_s(error_code code, absl::string_view msg) noexcept : _info(new error_info(code, msg)) {}
+    error_s(error_code code, std::string_view msg) noexcept
+        : _info(std::make_unique<error_info>(code, msg))
+    {
+    }
 
     struct error_info
     {
         error_code code;
         std::string msg; // TODO(wutao1): use raw char* to improve performance?
 
-        error_info(error_code c, absl::string_view s) : code(c), msg(s) {}
+        error_info(error_code c, std::string_view s) noexcept : code(c), msg(s) {}
     };
 
     void copy(const error_s &rhs)
@@ -170,7 +184,6 @@ private:
         }
     }
 
-private:
     std::unique_ptr<error_info> _info;
 };
 
@@ -223,7 +236,7 @@ private:
 
 USER_DEFINED_STRUCTURE_FORMATTER(::dsn::error_s);
 
-#define FMT_ERR(ec, msg, args...) error_s::make(ec, fmt::format(msg, ##args))
+#define FMT_ERR(ec, msg, args...) ::dsn::error_s::make(ec, fmt::format(msg, ##args))
 
 #define RETURN_NOT_OK(s)                                                                           \
     do {                                                                                           \
@@ -231,10 +244,58 @@ USER_DEFINED_STRUCTURE_FORMATTER(::dsn::error_s);
         if (dsn_unlikely(!_s)) {                                                                   \
             return _s;                                                                             \
         }                                                                                          \
-    } while (false);
+    } while (false)
+
+#define RETURN_EC_NOT_OK(s)                                                                        \
+    do {                                                                                           \
+        const ::dsn::error_s &_s = (s);                                                            \
+        if (dsn_unlikely(!_s)) {                                                                   \
+            return _s.code();                                                                      \
+        }                                                                                          \
+    } while (false)
+
+#define RETURN_ES_NOT_OK_MSG(s, ...)                                                               \
+    do {                                                                                           \
+        const ::dsn::error_s &_s = (s);                                                            \
+        if (dsn_unlikely(!_s)) {                                                                   \
+            fmt::println(stderr, "{}: {}", _s, fmt::format(__VA_ARGS__));                          \
+            return _s;                                                                             \
+        }                                                                                          \
+    } while (false)
+
+#define RETURN_EC_NOT_OK_MSG(s, ...)                                                               \
+    do {                                                                                           \
+        const ::dsn::error_s &_s = (s);                                                            \
+        if (dsn_unlikely(!_s)) {                                                                   \
+            fmt::println(stderr, "{}: {}", _s, fmt::format(__VA_ARGS__));                          \
+            return _s.code();                                                                      \
+        }                                                                                          \
+    } while (false)
+
+#define RETURN_EW_NOT_OK_MSG(s, T, ...)                                                            \
+    do {                                                                                           \
+        ::dsn::error_s _s = (s);                                                                   \
+        if (dsn_unlikely(!_s)) {                                                                   \
+            fmt::println(stderr, "{}: {}", _s, fmt::format(__VA_ARGS__));                          \
+            return dsn::error_with<T>(std::move(_s));                                              \
+        }                                                                                          \
+    } while (false)
 
 #define CHECK_OK(s, ...)                                                                           \
     do {                                                                                           \
         const ::dsn::error_s &_s = (s);                                                            \
         CHECK(_s.is_ok(), fmt::format(__VA_ARGS__));                                               \
-    } while (false);
+    } while (false)
+
+#define RETURN_ERRS_NOT_TRUE(exp, code, ...)                                                       \
+    do {                                                                                           \
+        if (dsn_unlikely(!(exp))) {                                                                \
+            return dsn::error_s::make(code, fmt::format(__VA_ARGS__));                             \
+        }                                                                                          \
+    } while (false)
+
+#ifndef NDEBUG
+#define DCHECK_OK CHECK_OK
+#else
+#define DCHECK_OK(s, ...)
+#endif

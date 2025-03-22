@@ -20,18 +20,17 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+// IWYU pragma: no_include <type_traits>
 
 #include "common/backup_common.h"
 #include "common/replication.codes.h"
-#include "perf_counter/perf_counter.h"
-#include "perf_counter/perf_counter_wrapper.h"
 #include "replica/replica.h"
-#include "replica/replica_stub.h"
 #include "runtime/api_layer1.h"
-#include "runtime/task/async_calls.h"
+#include "task/async_calls.h"
 #include "utils/blob.h"
 #include "utils/error_code.h"
 #include "utils/filesystem.h"
+#include "utils/metrics.h"
 #include "utils/utils.h"
 
 namespace dsn {
@@ -70,7 +69,7 @@ void cold_backup_context::cancel()
 {
     _status.store(ColdBackupCanceled);
     if (_owner_replica != nullptr) {
-        _owner_replica->get_replica_stub()->_counter_cold_backup_recent_cancel_count->increment();
+        METRIC_INCREMENT(*_owner_replica, backup_cancelled_count);
     }
 }
 
@@ -92,7 +91,7 @@ bool cold_backup_context::fail_check(const char *failure_reason)
         strncpy(_reason, failure_reason, sizeof(_reason) - 1);
         _reason[sizeof(_reason) - 1] = '\0';
         if (_owner_replica != nullptr) {
-            _owner_replica->get_replica_stub()->_counter_cold_backup_recent_fail_count->increment();
+            METRIC_INCREMENT(*_owner_replica, backup_failed_count);
         }
         return true;
     } else {
@@ -106,7 +105,7 @@ bool cold_backup_context::complete_check(bool uploaded)
     if (uploaded) {
         _progress.store(cold_backup_constant::PROGRESS_FINISHED);
         if (_owner_replica != nullptr) {
-            _owner_replica->get_replica_stub()->_counter_cold_backup_recent_succ_count->increment();
+            METRIC_INCREMENT(*_owner_replica, backup_successful_count);
         }
         return _status.compare_exchange_strong(checking, ColdBackupCompleted);
     } else {
@@ -131,7 +130,7 @@ bool cold_backup_context::fail_checkpoint(const char *failure_reason)
         strncpy(_reason, failure_reason, sizeof(_reason) - 1);
         _reason[sizeof(_reason) - 1] = '\0';
         if (_owner_replica != nullptr) {
-            _owner_replica->get_replica_stub()->_counter_cold_backup_recent_fail_count->increment();
+            METRIC_INCREMENT(*_owner_replica, backup_failed_count);
         }
         return true;
     } else {
@@ -157,7 +156,7 @@ bool cold_backup_context::fail_upload(const char *failure_reason)
         strncpy(_reason, failure_reason, sizeof(_reason) - 1);
         _reason[sizeof(_reason) - 1] = '\0';
         if (_owner_replica != nullptr) {
-            _owner_replica->get_replica_stub()->_counter_cold_backup_recent_fail_count->increment();
+            METRIC_INCREMENT(*_owner_replica, backup_failed_count);
         }
         return true;
     } else {
@@ -173,7 +172,7 @@ bool cold_backup_context::complete_upload()
         _status.compare_exchange_strong(paused, ColdBackupCompleted)) {
         _progress.store(cold_backup_constant::PROGRESS_FINISHED);
         if (_owner_replica != nullptr) {
-            _owner_replica->get_replica_stub()->_counter_cold_backup_recent_succ_count->increment();
+            METRIC_INCREMENT(*_owner_replica, backup_successful_count);
         }
         return true;
     } else {
@@ -227,24 +226,25 @@ void cold_backup_context::check_backup_on_remote()
                 // before retry, should add_ref(), and must release_ref() after retry
                 add_ref();
 
-                tasking::enqueue(LPC_BACKGROUND_COLD_BACKUP,
-                                 nullptr,
-                                 [this]() {
-                                     // before retry, should check whether the status is ready for
-                                     // check
-                                     if (!is_ready_for_check()) {
-                                         LOG_INFO("{}: backup status has changed to {}, ignore "
-                                                  "checking backup on remote",
-                                                  name,
-                                                  cold_backup_status_to_string(status()));
-                                         ignore_check();
-                                     } else {
-                                         check_backup_on_remote();
-                                     }
-                                     release_ref();
-                                 },
-                                 0,
-                                 std::chrono::seconds(10));
+                tasking::enqueue(
+                    LPC_BACKGROUND_COLD_BACKUP,
+                    nullptr,
+                    [this]() {
+                        // before retry, should check whether the status is ready for
+                        // check
+                        if (!is_ready_for_check()) {
+                            LOG_INFO("{}: backup status has changed to {}, ignore "
+                                     "checking backup on remote",
+                                     name,
+                                     cold_backup_status_to_string(status()));
+                            ignore_check();
+                        } else {
+                            check_backup_on_remote();
+                        }
+                        release_ref();
+                    },
+                    0,
+                    std::chrono::seconds(10));
             } else {
                 LOG_ERROR("{}: block service create file failed, file = {}, err = {}",
                           name,
@@ -291,22 +291,23 @@ void cold_backup_context::read_current_chkpt_file(
                           file_handle->file_name());
                 add_ref();
 
-                tasking::enqueue(LPC_BACKGROUND_COLD_BACKUP,
-                                 nullptr,
-                                 [this, file_handle]() {
-                                     if (!is_ready_for_check()) {
-                                         LOG_INFO("{}: backup status has changed to {}, ignore "
-                                                  "checking backup on remote",
-                                                  name,
-                                                  cold_backup_status_to_string(status()));
-                                         ignore_check();
-                                     } else {
-                                         read_current_chkpt_file(file_handle);
-                                     }
-                                     release_ref();
-                                 },
-                                 0,
-                                 std::chrono::seconds(10));
+                tasking::enqueue(
+                    LPC_BACKGROUND_COLD_BACKUP,
+                    nullptr,
+                    [this, file_handle]() {
+                        if (!is_ready_for_check()) {
+                            LOG_INFO("{}: backup status has changed to {}, ignore "
+                                     "checking backup on remote",
+                                     name,
+                                     cold_backup_status_to_string(status()));
+                            ignore_check();
+                        } else {
+                            read_current_chkpt_file(file_handle);
+                        }
+                        release_ref();
+                    },
+                    0,
+                    std::chrono::seconds(10));
             } else {
                 LOG_ERROR("{}: read remote file failed, file = {}, err = {}",
                           name,
@@ -370,22 +371,23 @@ void cold_backup_context::remote_chkpt_dir_exist(const std::string &chkpt_dirnam
                     chkpt_dirname);
                 add_ref();
 
-                tasking::enqueue(LPC_BACKGROUND_COLD_BACKUP,
-                                 nullptr,
-                                 [this, chkpt_dirname]() {
-                                     if (!is_ready_for_check()) {
-                                         LOG_INFO("{}: backup status has changed to {}, ignore "
-                                                  "checking backup on remote",
-                                                  name,
-                                                  cold_backup_status_to_string(status()));
-                                         ignore_check();
-                                     } else {
-                                         remote_chkpt_dir_exist(chkpt_dirname);
-                                     }
-                                     release_ref();
-                                 },
-                                 0,
-                                 std::chrono::seconds(10));
+                tasking::enqueue(
+                    LPC_BACKGROUND_COLD_BACKUP,
+                    nullptr,
+                    [this, chkpt_dirname]() {
+                        if (!is_ready_for_check()) {
+                            LOG_INFO("{}: backup status has changed to {}, ignore "
+                                     "checking backup on remote",
+                                     name,
+                                     cold_backup_status_to_string(status()));
+                            ignore_check();
+                        } else {
+                            remote_chkpt_dir_exist(chkpt_dirname);
+                        }
+                        release_ref();
+                    },
+                    0,
+                    std::chrono::seconds(10));
             } else {
                 LOG_ERROR("{}: block service list remote dir failed, dirname = {}, err = {}",
                           name,
@@ -682,35 +684,36 @@ void cold_backup_context::upload_file(const std::string &local_filename)
                           local_filename);
                 add_ref();
 
-                tasking::enqueue(LPC_BACKGROUND_COLD_BACKUP,
-                                 nullptr,
-                                 [this, local_filename]() {
-                                     // TODO: status change from ColdBackupUploading to
-                                     // ColdBackupPaused, and upload file timeout, but when callback
-                                     // is executed it catches the status(ColdBackupPaused)
-                                     // now, if status back to ColdBackupUploading very soon, and
-                                     // call upload_checkpoint_to_remote() here,
-                                     // upload_checkpoint_to_remote() maybe acquire the _lock first,
-                                     // then stop give back file(upload timeout), the file is still
-                                     // in uploading this file will not be uploaded until you call
-                                     // upload_checkpoint_to_remote() after it's given back
-                                     if (!is_ready_for_upload()) {
-                                         std::string full_path_local_file =
-                                             ::dsn::utils::filesystem::path_combine(checkpoint_dir,
-                                                                                    local_filename);
-                                         LOG_INFO("{}: backup status has changed to {}, stop "
-                                                  "upload checkpoint file to remote, file = {}",
-                                                  name,
-                                                  cold_backup_status_to_string(status()),
-                                                  full_path_local_file);
-                                         file_upload_uncomplete(local_filename);
-                                     } else {
-                                         upload_file(local_filename);
-                                     }
-                                     release_ref();
-                                 },
-                                 0,
-                                 std::chrono::seconds(10));
+                tasking::enqueue(
+                    LPC_BACKGROUND_COLD_BACKUP,
+                    nullptr,
+                    [this, local_filename]() {
+                        // TODO: status change from ColdBackupUploading to
+                        // ColdBackupPaused, and upload file timeout, but when callback
+                        // is executed it catches the status(ColdBackupPaused)
+                        // now, if status back to ColdBackupUploading very soon, and
+                        // call upload_checkpoint_to_remote() here,
+                        // upload_checkpoint_to_remote() maybe acquire the _lock first,
+                        // then stop give back file(upload timeout), the file is still
+                        // in uploading this file will not be uploaded until you call
+                        // upload_checkpoint_to_remote() after it's given back
+                        if (!is_ready_for_upload()) {
+                            std::string full_path_local_file =
+                                ::dsn::utils::filesystem::path_combine(checkpoint_dir,
+                                                                       local_filename);
+                            LOG_INFO("{}: backup status has changed to {}, stop "
+                                     "upload checkpoint file to remote, file = {}",
+                                     name,
+                                     cold_backup_status_to_string(status()),
+                                     full_path_local_file);
+                            file_upload_uncomplete(local_filename);
+                        } else {
+                            upload_file(local_filename);
+                        }
+                        release_ref();
+                    },
+                    0,
+                    std::chrono::seconds(10));
             } else {
                 LOG_ERROR("{}: block service create file failed, file = {}, err = {}",
                           name,
@@ -719,8 +722,7 @@ void cold_backup_context::upload_file(const std::string &local_filename)
                 fail_upload("create file failed");
             }
             if (resp.err != ERR_OK && _owner_replica != nullptr) {
-                _owner_replica->get_replica_stub()
-                    ->_counter_cold_backup_recent_upload_file_fail_count->increment();
+                METRIC_INCREMENT(*_owner_replica, backup_file_upload_failed_count);
             }
             release_ref();
             return;
@@ -782,8 +784,7 @@ void cold_backup_context::on_upload(const dist::block_service::block_file_ptr &f
                 fail_upload("upload checkpoint file to remote failed");
             }
             if (resp.err != ERR_OK && _owner_replica != nullptr) {
-                _owner_replica->get_replica_stub()
-                    ->_counter_cold_backup_recent_upload_file_fail_count->increment();
+                METRIC_INCREMENT(*_owner_replica, backup_file_upload_failed_count);
             }
             release_ref();
             return;
@@ -914,22 +915,23 @@ void cold_backup_context::write_current_chkpt_file(const std::string &value)
                           current_chkpt_file);
                 add_ref();
 
-                tasking::enqueue(LPC_BACKGROUND_COLD_BACKUP,
-                                 nullptr,
-                                 [this, value]() {
-                                     if (!is_ready_for_upload()) {
-                                         LOG_INFO("{}: backup status has changed to {}, stop write "
-                                                  "current checkpoint file",
-                                                  name,
-                                                  cold_backup_status_to_string(status()));
-                                     } else {
-                                         write_current_chkpt_file(value);
-                                     }
+                tasking::enqueue(
+                    LPC_BACKGROUND_COLD_BACKUP,
+                    nullptr,
+                    [this, value]() {
+                        if (!is_ready_for_upload()) {
+                            LOG_INFO("{}: backup status has changed to {}, stop write "
+                                     "current checkpoint file",
+                                     name,
+                                     cold_backup_status_to_string(status()));
+                        } else {
+                            write_current_chkpt_file(value);
+                        }
 
-                                     release_ref();
-                                 },
-                                 0,
-                                 std::chrono::seconds(10));
+                        release_ref();
+                    },
+                    0,
+                    std::chrono::seconds(10));
             } else {
                 LOG_ERROR("{}: block service create file failed, file = {}, err = {}",
                           name,
@@ -966,22 +968,23 @@ void cold_backup_context::on_write(const dist::block_service::block_file_ptr &fi
                          file_handle->file_name());
                 add_ref();
 
-                tasking::enqueue(LPC_BACKGROUND_COLD_BACKUP,
-                                 nullptr,
-                                 [this, file_handle, value, callback]() {
-                                     if (!is_ready_for_upload()) {
-                                         LOG_INFO("{}: backup status has changed to {}, stop write "
-                                                  "remote file, file = {}",
-                                                  name,
-                                                  cold_backup_status_to_string(status()),
-                                                  file_handle->file_name());
-                                     } else {
-                                         on_write(file_handle, value, callback);
-                                     }
-                                     release_ref();
-                                 },
-                                 0,
-                                 std::chrono::seconds(10));
+                tasking::enqueue(
+                    LPC_BACKGROUND_COLD_BACKUP,
+                    nullptr,
+                    [this, file_handle, value, callback]() {
+                        if (!is_ready_for_upload()) {
+                            LOG_INFO("{}: backup status has changed to {}, stop write "
+                                     "remote file, file = {}",
+                                     name,
+                                     cold_backup_status_to_string(status()),
+                                     file_handle->file_name());
+                        } else {
+                            on_write(file_handle, value, callback);
+                        }
+                        release_ref();
+                    },
+                    0,
+                    std::chrono::seconds(10));
             } else {
                 // here, must call the callback to release_ref
                 callback(false);
@@ -1002,10 +1005,8 @@ void cold_backup_context::on_upload_file_complete(const std::string &local_filen
     _upload_file_size.fetch_add(f_size);
     file_upload_complete(local_filename);
     if (_owner_replica != nullptr) {
-        _owner_replica->get_replica_stub()
-            ->_counter_cold_backup_recent_upload_file_succ_count->increment();
-        _owner_replica->get_replica_stub()->_counter_cold_backup_recent_upload_file_size->add(
-            f_size);
+        METRIC_INCREMENT(*_owner_replica, backup_file_upload_successful_count);
+        METRIC_INCREMENT_BY(*_owner_replica, backup_file_upload_total_bytes, f_size);
     }
     // update progress
     // int a = 10; int b = 3; then  b/a = 0;

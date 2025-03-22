@@ -33,14 +33,17 @@ namespace py pypegasus.replication
 
 struct partition_configuration
 {
-    1:dsn.gpid               pid;
-    2:i64                    ballot;
-    3:i32                    max_replica_count;
-    4:dsn.rpc_address        primary;
-    5:list<dsn.rpc_address>  secondaries;
-    6:list<dsn.rpc_address>  last_drops;
-    7:i64                    last_committed_decree;
-    8:i32                    partition_flags;
+    1:dsn.gpid                      pid;
+    2:i64                           ballot;
+    3:i32                           max_replica_count;
+    4:dsn.rpc_address               primary;
+    5:list<dsn.rpc_address>         secondaries;
+    6:list<dsn.rpc_address>         last_drops;
+    7:i64                           last_committed_decree;
+    8:i32                           partition_flags;
+    9:optional dsn.host_port        hp_primary;
+    10:optional list<dsn.host_port> hp_secondaries;
+    11:optional list<dsn.host_port> hp_last_drops;
 }
 
 struct query_cfg_request
@@ -73,9 +76,9 @@ enum app_status
     AS_INVALID,
     AS_AVAILABLE,
     AS_CREATING,
-    AS_CREATE_FAILED, // depricated
+    AS_CREATE_FAILED, // deprecated
     AS_DROPPING,
-    AS_DROP_FAILED, // depricated
+    AS_DROP_FAILED, // deprecated
     AS_DROPPED,
     AS_RECALLING
 }
@@ -110,4 +113,9 @@ struct app_info
     // New fields for bulk load
     // Whether this app is executing bulk load
     14:optional bool    is_bulk_loading = false;
+
+    // Whether all atomic writes to this table are made idempotent:
+    // - true: made idempotent.
+    // - false: kept non-idempotent as their respective client requests. 
+    15:optional bool    atomic_idempotent = false;
 }

@@ -15,11 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-FROM apache/pegasus:build-env-centos7 as builder
+ARG GITHUB_BRANCH=master
+ARG OS_VERSION=rockylinux9
+FROM apache/pegasus:build-env-${OS_VERSION}-${GITHUB_BRANCH} as builder
 
 WORKDIR /root
 
-ARG GITHUB_BRANCH=master
+ARG GITHUB_BRANCH
 ARG GITHUB_REPOSITORY_URL=https://github.com/apache/incubator-pegasus.git
 RUN git clone --depth=1 --branch=${GITHUB_BRANCH} ${GITHUB_REPOSITORY_URL}
 

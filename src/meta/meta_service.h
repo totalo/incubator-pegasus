@@ -46,21 +46,22 @@
 #include "meta_options.h"
 #include "meta_rpc_types.h"
 #include "meta_server_failure_detector.h"
-#include "perf_counter/perf_counter_wrapper.h"
+#include "rpc/dns_resolver.h"
+#include "rpc/network.h"
+#include "rpc/rpc_host_port.h"
+#include "rpc/rpc_message.h"
+#include "rpc/serialization.h"
 #include "runtime/api_layer1.h"
-#include "runtime/rpc/network.h"
-#include "runtime/rpc/rpc_address.h"
-#include "runtime/rpc/rpc_message.h"
-#include "runtime/rpc/serialization.h"
-#include "runtime/security/access_controller.h"
 #include "runtime/serverlet.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_code.h"
-#include "runtime/task/task_tracker.h"
+#include "security/access_controller.h"
+#include "task/task.h"
+#include "task/task_code.h"
+#include "task/task_tracker.h"
 #include "utils/autoref_ptr.h"
 #include "utils/enum_helper.h"
 #include "utils/error_code.h"
 #include "utils/fmt_logging.h"
+#include "utils/metrics.h"
 #include "utils/threadpool_code.h"
 #include "utils/zlocks.h"
 
@@ -71,6 +72,7 @@ namespace ranger {
 class ranger_resource_policy_manager;
 } // namespace ranger
 namespace dist {
+
 class meta_state_service;
 } // namespace dist
 
@@ -94,6 +96,7 @@ class test_checker;
 DEFINE_TASK_CODE(LPC_DEFAULT_CALLBACK, TASK_PRIORITY_COMMON, dsn::THREAD_POOL_DEFAULT)
 
 enum class meta_op_status
+
 {
     FREE = 0,
     RECALL,
@@ -172,20 +175,20 @@ public:
     {
         dsn_rpc_reply(response);
     }
-    virtual void send_message(const rpc_address &target, dsn::message_ex *request)
+    virtual void send_message(const host_port &target, dsn::message_ex *request)
     {
-        dsn_rpc_call_one_way(target, request);
+        dsn_rpc_call_one_way(dsn::dns_resolver::instance().resolve_address(target), request);
     }
     virtual void send_request(dsn::message_ex * /*req*/,
-                              const rpc_address &target,
+                              const host_port &target,
                               const rpc_response_task_ptr &callback)
     {
-        dsn_rpc_call(target, callback);
+        dsn_rpc_call(dsn::dns_resolver::instance().resolve_address(target), callback);
     }
 
     // these two callbacks are running in fd's thread_pool, and in fd's lock
-    void set_node_state(const std::vector<rpc_address> &nodes_list, bool is_alive);
-    void get_node_state(/*out*/ std::map<rpc_address, bool> &all_nodes);
+    void set_node_state(const std::vector<host_port> &nodes_list, bool is_alive);
+    void get_node_state(/*out*/ std::map<host_port, bool> &all_nodes);
 
     void start_service();
     void balancer_run();
@@ -259,6 +262,7 @@ private:
     void on_modify_duplication(duplication_modify_rpc rpc);
     void on_query_duplication_info(duplication_query_rpc rpc);
     void on_duplication_sync(duplication_sync_rpc rpc);
+    void on_list_duplication_info(duplication_list_rpc rpc);
     void register_duplication_rpc_handlers();
     void recover_duplication_from_meta_state();
     void initialize_duplication_service();
@@ -285,11 +289,17 @@ private:
     void on_get_max_replica_count(configuration_get_max_replica_count_rpc rpc);
     void on_set_max_replica_count(configuration_set_max_replica_count_rpc rpc);
 
+    // Get `atomic_idempotent` of a table.
+    void on_get_atomic_idempotent(configuration_get_atomic_idempotent_rpc rpc);
+
+    // Set `atomic_idempotent` of a table.
+    void on_set_atomic_idempotent(configuration_set_atomic_idempotent_rpc rpc);
+
     // if return 'kNotLeaderAndCannotForwardRpc' and 'forward_address' != nullptr, then return
     // leader by 'forward_address'.
-    meta_leader_state check_leader(dsn::message_ex *req, dsn::rpc_address *forward_address);
+    meta_leader_state check_leader(dsn::message_ex *req, dsn::host_port *forward_address);
     template <typename TRpcHolder>
-    meta_leader_state check_leader(TRpcHolder rpc, /*out*/ rpc_address *forward_address);
+    meta_leader_state check_leader(TRpcHolder rpc, /*out*/ host_port *forward_address);
 
     // app_name: when the Ranger ACL is enabled, some rpc requests need to verify the app_name
     // ret:
@@ -297,7 +307,7 @@ private:
     //    true:  rpc request check and authentication succeed
     template <typename TRpcHolder>
     bool check_status_and_authz(TRpcHolder rpc,
-                                /*out*/ rpc_address *forward_address = nullptr,
+                                /*out*/ host_port *forward_address = nullptr,
                                 const std::string &app_name = "");
 
     // app_name: when the Ranger ACL is enabled, some rpc requests need to verify the app_name
@@ -312,7 +322,7 @@ private:
     bool check_status_and_authz_with_reply(message_ex *msg);
 
     template <typename TRpcHolder>
-    bool check_leader_status(TRpcHolder rpc, rpc_address *forward_address = nullptr);
+    bool check_leader_status(TRpcHolder rpc, host_port *forward_address = nullptr);
 
     error_code remote_storage_initialize();
     bool check_freeze() const;
@@ -329,6 +339,7 @@ private:
     friend class meta_partition_guardian_test;
     friend class meta_service_test;
     friend class meta_service_test_app;
+    friend class server_state_test;
     friend class meta_split_service_test;
     friend class meta_test_base;
     friend class policy_context_test;
@@ -338,7 +349,7 @@ private:
 
     replication_options _opts;
     meta_options _meta_opts;
-    uint64_t _node_live_percentage_threshold_for_update;
+    int32_t _node_live_percentage_threshold_for_update;
     std::unique_ptr<command_deregister> _ctrl_node_live_percentage_threshold_for_update;
 
     std::shared_ptr<server_state> _state;
@@ -363,8 +374,8 @@ private:
 
     // [
     // this is protected by failure_detector::_lock
-    std::set<rpc_address> _alive_set;
-    std::set<rpc_address> _dead_set;
+    std::set<host_port> _alive_set;
+    std::set<host_port> _dead_set;
     // ]
     mutable zrwlock_nr _meta_lock;
 
@@ -375,9 +386,9 @@ private:
 
     std::string _cluster_root;
 
-    perf_counter_wrapper _recent_disconnect_count;
-    perf_counter_wrapper _unalive_nodes_count;
-    perf_counter_wrapper _alive_nodes_count;
+    METRIC_VAR_DECLARE_counter(replica_server_disconnections);
+    METRIC_VAR_DECLARE_gauge_int64(unalive_replica_servers);
+    METRIC_VAR_DECLARE_gauge_int64(alive_replica_servers);
 
     dsn::task_tracker _tracker;
 
@@ -391,9 +402,9 @@ private:
 };
 
 template <typename TRpcHolder>
-meta_leader_state meta_service::check_leader(TRpcHolder rpc, rpc_address *forward_address)
+meta_leader_state meta_service::check_leader(TRpcHolder rpc, host_port *forward_address)
 {
-    dsn::rpc_address leader;
+    host_port leader;
     if (!_failure_detector->get_leader(&leader)) {
         if (!rpc.dsn_request()->header->context.u.is_forward_supported) {
             if (forward_address != nullptr)
@@ -401,13 +412,12 @@ meta_leader_state meta_service::check_leader(TRpcHolder rpc, rpc_address *forwar
             return meta_leader_state::kNotLeaderAndCannotForwardRpc;
         }
 
-        LOG_DEBUG("leader address: {}", leader);
-        if (!leader.is_invalid()) {
-            rpc.forward(leader);
+        if (leader) {
+            rpc.forward(dsn::dns_resolver::instance().resolve_address(leader));
             return meta_leader_state::kNotLeaderAndCanForwardRpc;
         } else {
             if (forward_address != nullptr)
-                forward_address->set_invalid();
+                forward_address->reset();
             return meta_leader_state::kNotLeaderAndCannotForwardRpc;
         }
     }
@@ -415,7 +425,7 @@ meta_leader_state meta_service::check_leader(TRpcHolder rpc, rpc_address *forwar
 }
 
 template <typename TRpcHolder>
-bool meta_service::check_leader_status(TRpcHolder rpc, rpc_address *forward_address)
+bool meta_service::check_leader_status(TRpcHolder rpc, host_port *forward_address)
 {
     auto result = check_leader(rpc, forward_address);
     if (result == meta_leader_state::kNotLeaderAndCanForwardRpc)
@@ -439,7 +449,7 @@ bool meta_service::check_leader_status(TRpcHolder rpc, rpc_address *forward_addr
 // above policy information may be out of date.
 template <typename TRpcHolder>
 bool meta_service::check_status_and_authz(TRpcHolder rpc,
-                                          rpc_address *forward_address,
+                                          host_port *forward_address,
                                           const std::string &app_name)
 {
     if (!check_leader_status(rpc, forward_address)) {

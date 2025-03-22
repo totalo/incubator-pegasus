@@ -1,28 +1,28 @@
 /*
-* The MIT License (MIT)
-*
-* Copyright (c) 2015 Microsoft Corporation
-*
-* -=- Robust Distributed System Nucleus (rDSN) -=-
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-* THE SOFTWARE.
-*/
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2015 Microsoft Corporation
+ *
+ * -=- Robust Distributed System Nucleus (rDSN) -=-
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
 
 #include "simple_kv.server.impl.h"
 
@@ -37,12 +37,12 @@
 
 #include "aio/aio_task.h"
 #include "aio/file_io.h"
+#include "common/replication.codes.h"
 #include "consensus_types.h"
 #include "rocksdb/env.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "runtime/serverlet.h"
-#include "runtime/task/task_code.h"
 #include "simple_kv_types.h"
 #include "utils/autoref_ptr.h"
 #include "utils/binary_reader.h"
@@ -50,7 +50,6 @@
 #include "utils/env.h"
 #include "utils/filesystem.h"
 #include "utils/fmt_logging.h"
-#include "utils/threadpool_code.h"
 #include "utils/utils.h"
 
 // TODO(yingchun): most of the code are the same as
@@ -67,8 +66,6 @@ class replica;
 namespace dsn {
 namespace replication {
 namespace test {
-
-DEFINE_TASK_CODE(LPC_AIO_IMMEDIATE_CALLBACK, TASK_PRIORITY_COMMON, dsn::THREAD_POOL_DEFAULT)
 
 bool simple_kv_service_impl::s_simple_kv_open_fail = false;
 bool simple_kv_service_impl::s_simple_kv_close_fail = false;
@@ -365,6 +362,6 @@ void simple_kv_service_impl::recover(const std::string &name, int64_t version)
         }
     }
 }
-}
-}
-}
+} // namespace test
+} // namespace replication
+} // namespace dsn

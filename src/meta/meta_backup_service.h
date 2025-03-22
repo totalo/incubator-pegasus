@@ -37,17 +37,19 @@
 #include "common/json_helper.h"
 #include "common/replication_other_types.h"
 #include "meta_rpc_types.h"
-#include "perf_counter/perf_counter_wrapper.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_tracker.h"
+#include "task/task.h"
+#include "task/task_tracker.h"
 #include "utils/api_utilities.h"
+#include "utils/autoref_ptr.h"
 #include "utils/error_code.h"
 #include "utils/fmt_utils.h"
+#include "utils/metrics.h"
+#include "utils/ports.h"
 #include "utils/zlocks.h"
 
 namespace dsn {
 class message_ex;
-class rpc_address;
+class host_port;
 
 namespace dist {
 namespace block_service {
@@ -176,6 +178,24 @@ struct backup_start_time
     DEFINE_JSON_SERIALIZATION(hour, minute)
 };
 
+class backup_policy_metrics
+{
+public:
+    backup_policy_metrics() = default;
+    backup_policy_metrics(const std::string &policy_name);
+
+    const metric_entity_ptr &backup_policy_metric_entity() const;
+
+    METRIC_DEFINE_SET(backup_recent_duration_ms, int64_t)
+
+private:
+    const std::string _policy_name;
+    const metric_entity_ptr _backup_policy_metric_entity;
+    METRIC_VAR_DECLARE_gauge_int64(backup_recent_duration_ms);
+
+    DISALLOW_COPY_AND_ASSIGN(backup_policy_metrics);
+};
+
 //
 // the backup process of meta server:
 //      1, write the app metadata to block filesystem
@@ -196,6 +216,7 @@ public:
     int32_t backup_history_count_to_keep;
     bool is_disable;
     backup_start_time start_time;
+
     policy()
         : app_ids(),
           backup_interval_seconds(0),
@@ -276,7 +297,7 @@ mock_private :
     //
 
     mock_virtual bool
-    update_partition_progress_unlocked(gpid pid, int32_t progress, const rpc_address &source);
+    update_partition_progress_unlocked(gpid pid, int32_t progress, const host_port &source);
     mock_virtual void record_partition_checkpoint_size_unlock(const gpid& pid, int64_t size);
 
     mock_virtual void start_backup_app_meta_unlocked(int32_t app_id);
@@ -305,7 +326,7 @@ mock_private :
     mock_virtual void on_backup_reply(dsn::error_code err,
                                       backup_response &&response,
                                       gpid pid,
-                                      const rpc_address &primary);
+                                      const host_port &primary);
 
     mock_virtual void gc_backup_info_unlocked(const backup_info &info_to_gc);
     mock_virtual void issue_gc_backup_info_task_unlocked();
@@ -330,8 +351,9 @@ mock_private :
     backup_progress _progress;
     std::string _backup_sig; // policy_name@backup_id, used when print backup related log
 
-    perf_counter_wrapper _counter_policy_recent_backup_duration_ms;
-//clang-format on
+    std::unique_ptr<backup_policy_metrics> _metrics;
+
+    //clang-format on
     dsn::task_tracker _tracker;
 };
 
@@ -385,6 +407,7 @@ private:
 
     FRIEND_TEST(backup_service_test, test_init_backup);
     FRIEND_TEST(backup_service_test, test_query_backup_status);
+    FRIEND_TEST(backup_service_test, test_valid_policy_name);
     FRIEND_TEST(meta_backup_service_test, test_add_backup_policy);
 
     void start_create_policy_meta_root(dsn::task_ptr callback);
@@ -398,7 +421,7 @@ private:
                                             const policy &p,
                                             std::shared_ptr<policy_context> &p_context_ptr);
 
-    bool is_valid_policy_name_unlocked(const std::string &policy_name);
+    bool is_valid_policy_name_unlocked(const std::string &policy_name, std::string &hint_message);
 
     policy_factory _factory;
     meta_service *_meta_svc;

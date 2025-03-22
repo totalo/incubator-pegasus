@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#include <stdint.h>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -40,9 +41,10 @@
 #include "replica/split/replica_split_manager.h"
 #include "replica/test/mock_utils.h"
 #include "replica/test/replica_test_base.h"
-#include "runtime/rpc/rpc_address.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_tracker.h"
+#include "rpc/rpc_address.h"
+#include "rpc/rpc_host_port.h"
+#include "task/task.h"
+#include "task/task_tracker.h"
 #include "utils/autoref_ptr.h"
 #include "utils/error_code.h"
 #include "utils/fail_point.h"
@@ -71,7 +73,7 @@ public:
     {
         _app_info.app_id = APP_ID;
         _app_info.app_name = APP_NAME;
-        _app_info.app_type = "replica";
+        _app_info.app_type = replication_options::kReplicaAppType;
         _app_info.is_stateful = true;
         _app_info.max_replica_count = 3;
         _app_info.partition_count = OLD_PARTITION_COUNT;
@@ -125,12 +127,6 @@ public:
         }
     }
 
-    void mock_shared_log()
-    {
-        mock_mutation_log_shared_ptr shared_log_mock = new mock_mutation_log_shared("./");
-        stub->set_log(shared_log_mock);
-    }
-
     void mock_private_log(gpid pid, mock_replica_ptr rep, bool mock_log_file_flag)
     {
         mock_mutation_log_private_ptr private_log_mock = new mock_mutation_log_private(pid, rep);
@@ -160,7 +156,6 @@ public:
 
     void mock_parent_states()
     {
-        mock_shared_log();
         mock_private_log(PARENT_GPID, _parent_replica, true);
         mock_prepare_list(_parent_replica, true);
     }
@@ -179,7 +174,6 @@ public:
     void
     mock_child_async_learn_states(mock_replica_ptr plist_rep, bool add_to_plog, decree min_decree)
     {
-        mock_shared_log();
         mock_private_log(CHILD_GPID, _child_replica, false);
         mock_prepare_list(plist_rep, add_to_plog);
         // mock_learn_state
@@ -193,16 +187,16 @@ public:
 
     void mock_parent_primary_configuration(bool lack_of_secondary = false)
     {
-        partition_configuration config;
-        config.max_replica_count = 3;
-        config.pid = PARENT_GPID;
-        config.ballot = INIT_BALLOT;
-        config.primary = PRIMARY;
-        config.secondaries.emplace_back(SECONDARY);
+        partition_configuration pc;
+        pc.max_replica_count = 3;
+        pc.pid = PARENT_GPID;
+        pc.ballot = INIT_BALLOT;
+        SET_IP_AND_HOST_PORT_BY_DNS(pc, primary, PRIMARY);
+        ADD_IP_AND_HOST_PORT_BY_DNS(pc, secondaries, SECONDARY);
         if (!lack_of_secondary) {
-            config.secondaries.emplace_back(SECONDARY2);
+            ADD_IP_AND_HOST_PORT_BY_DNS(pc, secondaries, SECONDARY2);
         }
-        _parent_replica->set_primary_partition_configuration(config);
+        _parent_replica->set_primary_partition_configuration(pc);
     }
 
     void mock_update_child_partition_count_request(update_child_group_partition_count_request &req,
@@ -210,7 +204,7 @@ public:
     {
         req.child_pid = CHILD_GPID;
         req.ballot = b;
-        req.target_address = PRIMARY;
+        SET_IP_AND_HOST_PORT_BY_DNS(req, target, PRIMARY);
         req.new_partition_count = NEW_PARTITION_COUNT;
     }
 
@@ -301,7 +295,7 @@ public:
         req.child_gpid = CHILD_GPID;
         req.parent_gpid = PARENT_GPID;
         req.child_ballot = child_ballot;
-        req.child_address = PRIMARY;
+        SET_IPS_AND_HOST_PORTS_BY_DNS(req, child, PRIMARY);
 
         notify_cacth_up_response resp;
         _parent_split_mgr->parent_handle_child_catch_up(req, resp);
@@ -333,11 +327,11 @@ public:
         mock_update_child_partition_count_request(req, INIT_BALLOT);
         update_child_group_partition_count_response resp;
         resp.err = resp_err;
-        auto not_replied_addresses = std::make_shared<std::unordered_set<rpc_address>>();
-        not_replied_addresses->insert(PRIMARY);
+        auto not_replied_host_ports = std::make_shared<std::unordered_set<host_port>>();
+        not_replied_host_ports->insert(PRIMARY);
 
         _parent_split_mgr->on_update_child_group_partition_count_reply(
-            ERR_OK, req, resp, not_replied_addresses);
+            ERR_OK, req, resp, not_replied_host_ports);
         _parent_replica->tracker()->wait_outstanding_tasks();
         _child_replica->tracker()->wait_outstanding_tasks();
         return resp.err;
@@ -353,7 +347,7 @@ public:
     void test_on_register_child_reply(partition_status::type status, dsn::error_code resp_err)
     {
         stub->set_state_connected();
-        stub->set_rpc_address(PRIMARY);
+        stub->set_host_port(PRIMARY);
         mock_parent_split_context(status);
         _parent_replica->_primary_states.sync_send_write_request = true;
         _parent_split_mgr->_partition_version = -1;
@@ -364,11 +358,11 @@ public:
         req.parent_config.pid = PARENT_GPID;
         req.parent_config.ballot = INIT_BALLOT;
         req.parent_config.last_committed_decree = DECREE;
-        req.parent_config.primary = PRIMARY;
+        SET_IP_AND_HOST_PORT_BY_DNS(req.parent_config, primary, PRIMARY);
         req.child_config.pid = CHILD_GPID;
         req.child_config.ballot = INIT_BALLOT + 1;
         req.child_config.last_committed_decree = 0;
-        req.primary_address = PRIMARY;
+        SET_IP_AND_HOST_PORT_BY_DNS(req, primary, PRIMARY);
 
         register_child_response resp;
         resp.err = resp_err;
@@ -402,7 +396,7 @@ public:
         req.app = _parent_replica->_app_info;
         req.config.ballot = INIT_BALLOT;
         req.config.status = partition_status::PS_SECONDARY;
-        req.node = SECONDARY;
+        SET_IP_AND_HOST_PORT_BY_DNS(req, node, SECONDARY);
         if (meta_split_status == split_status::PAUSING ||
             meta_split_status == split_status::CANCELING) {
             req.__set_meta_split_status(meta_split_status);
@@ -434,7 +428,7 @@ public:
 
         std::shared_ptr<group_check_request> req = std::make_shared<group_check_request>();
         std::shared_ptr<group_check_response> resp = std::make_shared<group_check_response>();
-        req->node = SECONDARY;
+        SET_IPS_AND_HOST_PORTS_BY_DNS(*req, node, SECONDARY);
         if (meta_split_status != split_status::NOT_SPLIT) {
             req->__set_meta_split_status(meta_split_status);
         }
@@ -460,15 +454,15 @@ public:
         req.partition_count = OLD_PARTITION_COUNT;
         req.pid = PARENT_GPID;
 
-        partition_configuration child_config;
-        child_config.pid = CHILD_GPID;
-        child_config.ballot = INIT_BALLOT + 1;
-        child_config.last_committed_decree = 0;
+        partition_configuration child_pc;
+        child_pc.pid = CHILD_GPID;
+        child_pc.ballot = INIT_BALLOT + 1;
+        child_pc.last_committed_decree = 0;
 
         query_child_state_response resp;
         resp.err = ERR_OK;
         resp.__set_partition_count(NEW_PARTITION_COUNT);
-        resp.__set_child_config(child_config);
+        resp.__set_child_config(child_pc);
 
         _parent_split_mgr->on_query_child_state_reply(ERR_OK, req, resp);
         _parent_split_mgr->tracker()->wait_outstanding_tasks();
@@ -489,53 +483,58 @@ public:
         _child_replica->tracker()->wait_outstanding_tasks();
     }
 
-    int32_t child_get_prepare_list_count() { return _child_replica->get_plist()->count(); }
-    bool child_is_prepare_list_copied()
+    [[nodiscard]] int32_t child_get_prepare_list_count() const
+    {
+        return _child_replica->get_plist()->count();
+    }
+    [[nodiscard]] bool child_is_prepare_list_copied() const
     {
         return _child_replica->_split_states.is_prepare_list_copied;
     }
-    bool child_is_caught_up() { return _child_replica->_split_states.is_caught_up; }
+    [[nodiscard]] bool child_is_caught_up() const
+    {
+        return _child_replica->_split_states.is_caught_up;
+    }
 
-    split_status::type parent_get_split_status() { return _parent_split_mgr->_split_status; }
-    void parent_set_split_status(split_status::type status)
+    [[nodiscard]] split_status::type parent_get_split_status() const
+    {
+        return _parent_split_mgr->_split_status;
+    }
+    void parent_set_split_status(split_status::type status) const
     {
         _parent_split_mgr->_split_status = status;
     }
 
-    primary_context get_replica_primary_context(mock_replica_ptr rep)
-    {
-        return rep->_primary_states;
-    }
-    bool parent_sync_send_write_request()
+    [[nodiscard]] bool parent_sync_send_write_request() const
     {
         return _parent_replica->_primary_states.sync_send_write_request;
     }
-    int32_t parent_stopped_split_size()
+    [[nodiscard]] size_t parent_stopped_split_size() const
     {
         return _parent_replica->_primary_states.split_stopped_secondary.size();
     }
-    bool is_parent_not_in_split()
+    [[nodiscard]] bool is_parent_not_in_split() const
     {
         return _parent_split_mgr->_child_gpid.get_app_id() == 0 &&
                _parent_split_mgr->_child_init_ballot == 0 &&
                _parent_split_mgr->_split_status == split_status::NOT_SPLIT;
     }
-    bool primary_parent_not_in_split()
+    [[nodiscard]] bool primary_parent_not_in_split() const
     {
-        auto context = _parent_replica->_primary_states;
-        return context.caught_up_children.size() == 0 && context.register_child_task == nullptr &&
-               context.sync_send_write_request == false && context.query_child_task == nullptr &&
-               context.split_stopped_secondary.size() == 0 && is_parent_not_in_split();
+        const auto &context = _parent_replica->_primary_states;
+        return context.caught_up_children.empty() && context.register_child_task == nullptr &&
+               !context.sync_send_write_request && context.query_child_task == nullptr &&
+               context.split_stopped_secondary.empty() && is_parent_not_in_split();
     }
 
-public:
     const std::string APP_NAME = "split_table";
     const int32_t APP_ID = 2;
     const int32_t OLD_PARTITION_COUNT = 8;
     const int32_t NEW_PARTITION_COUNT = 16;
-    const rpc_address PRIMARY = rpc_address("127.0.0.1", 18230);
-    const rpc_address SECONDARY = rpc_address("127.0.0.2", 10058);
-    const rpc_address SECONDARY2 = rpc_address("127.0.0.3", 10805);
+
+    const host_port PRIMARY = host_port("localhost", 18230);
+    const host_port SECONDARY = host_port("localhost", 10058);
+    const host_port SECONDARY2 = host_port("localhost", 10805);
     const gpid PARENT_GPID = gpid(APP_ID, 1);
     const gpid CHILD_GPID = gpid(APP_ID, 9);
     const ballot INIT_BALLOT = 3;
@@ -555,7 +554,7 @@ public:
     learn_state _mock_learn_state;
 };
 
-INSTANTIATE_TEST_CASE_P(, replica_split_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, replica_split_test, ::testing::Values(false, true));
 
 // parent_start_split tests
 TEST_P(replica_split_test, parent_start_split_tests)
@@ -984,7 +983,7 @@ TEST_P(replica_split_test, primary_parent_handle_stop_test)
         split_status::type meta_split_status;
         bool lack_of_secondary;
         bool will_all_stop;
-        int32_t expected_size;
+        size_t expected_size;
         bool expected_all_stopped;
     } tests[]{{split_status::NOT_SPLIT, false, false, 0, false},
               {split_status::SPLITTING, false, false, 0, false},

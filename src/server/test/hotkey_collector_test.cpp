@@ -17,28 +17,33 @@
 
 #include "server/hotkey_collector.h"
 
-#include <absl/strings/string_view.h>
 #include <fmt/core.h>
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
+#include <string_view>
 #include <thread>
+#include <vector>
 
 #include "base/pegasus_key_schema.h"
 #include "common/gpid.h"
 #include "common/replication.codes.h"
 #include "gtest/gtest.h"
 #include "pegasus_server_test_base.h"
+#include "rpc/rpc_holder.h"
 #include "rrdb/rrdb.code.definition.h"
 #include "rrdb/rrdb_types.h"
-#include "runtime/rpc/rpc_holder.h"
-#include "runtime/task/async_calls.h"
-#include "runtime/task/task_tracker.h"
 #include "server/hotkey_collector_state.h"
 #include "server/pegasus_read_service.h"
 #include "server/test/message_utils.h"
+#include "task/async_calls.h"
+#include "task/task_tracker.h"
 #include "utils/error_code.h"
 #include "utils/flags.h"
 #include "utils/fmt_logging.h"
 #include "utils/rand.h"
+
+DSN_DECLARE_uint32(hotkey_buckets_num);
 
 namespace dsn {
 class message_ex;
@@ -46,8 +51,6 @@ class message_ex;
 
 namespace pegasus {
 namespace server {
-
-DSN_DECLARE_uint32(hotkey_buckets_num);
 
 static std::string generate_hash_key_by_random(bool is_hotkey, int probability = 100)
 {
@@ -70,7 +73,7 @@ TEST(hotkey_collector_public_func_test, get_bucket_id_test)
 {
     int bucket_id = -1;
     for (int i = 0; i < 1000000; i++) {
-        bucket_id = get_bucket_id(absl::string_view(generate_hash_key_by_random(false)),
+        bucket_id = get_bucket_id(std::string_view(generate_hash_key_by_random(false)),
                                   FLAGS_hotkey_buckets_num);
         ASSERT_GE(bucket_id, 0);
         ASSERT_LT(bucket_id, FLAGS_hotkey_buckets_num);
@@ -122,7 +125,7 @@ public:
     dsn::task_tracker _tracker;
 };
 
-INSTANTIATE_TEST_CASE_P(, coarse_collector_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, coarse_collector_test, ::testing::Values(false, true));
 
 TEST_P(coarse_collector_test, coarse_collector)
 {
@@ -179,7 +182,7 @@ public:
     dsn::task_tracker _tracker;
 };
 
-INSTANTIATE_TEST_CASE_P(, fine_collector_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, fine_collector_test, ::testing::Values(false, true));
 
 TEST_P(fine_collector_test, fine_collector)
 {
@@ -257,7 +260,7 @@ public:
         _server->on_detect_hotkey(req, resp);
     }
 
-    get_rpc generate_get_rpc(std::string hash_key)
+    static get_rpc generate_get_rpc(const std::string &hash_key)
     {
         dsn::blob raw_key;
         pegasus_generate_key(raw_key, hash_key, std::string("sortkey"));
@@ -265,7 +268,7 @@ public:
         return rpc;
     }
 
-    dsn::apps::update_request generate_set_req(std::string hash_key)
+    static dsn::apps::update_request generate_set_req(const std::string &hash_key)
     {
         dsn::apps::update_request req;
         dsn::blob raw_key;
@@ -289,7 +292,7 @@ public:
     dsn::task_tracker _tracker;
 };
 
-INSTANTIATE_TEST_CASE_P(, hotkey_collector_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, hotkey_collector_test, ::testing::Values(false, true));
 
 TEST_P(hotkey_collector_test, hotkey_type)
 {
@@ -377,14 +380,15 @@ TEST_P(hotkey_collector_test, data_completeness)
                      resp);
     ASSERT_EQ(resp.err, dsn::ERR_OK);
 
-    const uint16_t WRITE_REQUEST_COUNT = 1000;
-    dsn::message_ex *writes[WRITE_REQUEST_COUNT];
-    for (int i = 0; i < WRITE_REQUEST_COUNT; i++) {
-        writes[i] = create_put_request(generate_set_req(std::to_string(i)));
+    static const size_t kWriteRequestCount = 1000;
+    std::vector<dsn::message_ex *> writes;
+    writes.reserve(kWriteRequestCount);
+    for (size_t i = 0; i < kWriteRequestCount; ++i) {
+        writes.push_back(create_put_request(generate_set_req(std::to_string(i))));
     }
-    _server->on_batched_write_requests(int64_t(0), uint64_t(0), writes, WRITE_REQUEST_COUNT);
+    _server->on_batched_write_requests(0, 0, writes.data(), kWriteRequestCount, nullptr);
 
-    for (int i = 0; i < WRITE_REQUEST_COUNT; i++) {
+    for (size_t i = 0; i < kWriteRequestCount; ++i) {
         auto rpc = generate_get_rpc(std::to_string(i));
         _server->on_get(rpc);
         auto value = rpc.response().value.to_string();

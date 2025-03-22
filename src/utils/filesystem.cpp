@@ -25,10 +25,12 @@
  */
 
 #include <boost/filesystem/operations.hpp>
-#include <boost/system/error_code.hpp>
-#include <errno.h>
+#include <boost/filesystem/path.hpp>
+#include <boost/system/detail/error_code.hpp>
+#include <cerrno>
 #include <fmt/core.h>
 #include <ftw.h>
+#include <glob.h>
 #include <limits.h>
 #include <openssl/md5.h>
 #include <rocksdb/env.h>
@@ -40,7 +42,9 @@
 // IWYU pragma: no_include <bits/struct_stat.h>
 #include <unistd.h>
 #include <memory>
+#include <string_view>
 
+#include "errors.h"
 #include "utils/defer.h"
 #include "utils/env.h"
 #include "utils/fail_point.h"
@@ -48,7 +52,6 @@
 #include "utils/fmt_logging.h"
 #include "utils/ports.h"
 #include "utils/safe_strerror_posix.h"
-#include "absl/strings/string_view.h"
 
 #define getcwd_ getcwd
 #define rmdir_ rmdir
@@ -492,6 +495,12 @@ bool create_file(const std::string &path)
     return true;
 }
 
+bool is_absolute_path(const std::string &path)
+{
+    boost::filesystem::path p(path);
+    return p.is_absolute();
+}
+
 bool get_absolute_path(const std::string &path1, std::string &path2)
 {
     bool succ;
@@ -569,6 +578,17 @@ std::string path_combine(const std::string &path1, const std::string &path2)
     return npath;
 }
 
+std::string concat_path_unix_style(const std::string &prefix, const std::string &postfix)
+{
+    size_t pos1 = prefix.size(); // last_valid_pos + 1
+    while (pos1 > 0 && prefix[pos1 - 1] == '/')
+        pos1--;
+    size_t pos2 = 0; // first non '/' position
+    while (pos2 < postfix.size() && postfix[pos2] == '/')
+        pos2++;
+    return prefix.substr(0, pos1) + "/" + postfix.substr(pos2);
+}
+
 bool get_current_directory(std::string &path)
 {
     bool succ;
@@ -628,9 +648,9 @@ error_code get_process_image_path(int pid, std::string &path)
 
 bool get_disk_space_info(const std::string &path, disk_space_info &info)
 {
-    FAIL_POINT_INJECT_F("filesystem_get_disk_space_info", [&info](absl::string_view str) {
+    FAIL_POINT_INJECT_F("filesystem_get_disk_space_info", [&info](std::string_view str) {
         info.capacity = 100 * 1024 * 1024;
-        if (str.find("insufficient") != absl::string_view::npos) {
+        if (str.find("insufficient") != std::string_view::npos) {
             info.available = 512 * 1024;
         } else {
             info.available = 50 * 1024 * 1024;
@@ -830,11 +850,11 @@ bool verify_file_size(const std::string &fname, FileDataType type, const int64_t
 
 bool create_directory(const std::string &path, std::string &absolute_path, std::string &err_msg)
 {
-    FAIL_POINT_INJECT_F("filesystem_create_directory", [path](absl::string_view str) {
+    FAIL_POINT_INJECT_F("filesystem_create_directory", [path](std::string_view str) {
         // when str contains 'false', and path contains broken_disk_dir, mock create fail(return
         // false)
         std::string broken_disk_dir = "disk1";
-        return str.find("false") == absl::string_view::npos ||
+        return str.find("false") == std::string_view::npos ||
                path.find(broken_disk_dir) == std::string::npos;
     });
 
@@ -851,11 +871,11 @@ bool create_directory(const std::string &path, std::string &absolute_path, std::
 
 bool check_dir_rw(const std::string &path, std::string &err_msg)
 {
-    FAIL_POINT_INJECT_F("filesystem_check_dir_rw", [path](absl::string_view str) {
+    FAIL_POINT_INJECT_F("filesystem_check_dir_rw", [path](std::string_view str) {
         // when str contains 'false', and path contains broken_disk_dir, mock check fail(return
         // false)
         std::string broken_disk_dir = "disk1";
-        return str.find("false") == absl::string_view::npos ||
+        return str.find("false") == std::string_view::npos ||
                path.find(broken_disk_dir) == std::string::npos;
     });
 
@@ -888,6 +908,36 @@ bool check_dir_rw(const std::string &path, std::string &err_msg)
     }
 
     return true;
+}
+
+error_s glob(const std::string &path_pattern, std::vector<std::string> &path_list)
+{
+    glob_t result;
+    auto cleanup = dsn::defer([&] { ::globfree(&result); });
+
+    errno = 0;
+    int ret = ::glob(path_pattern.c_str(), GLOB_TILDE | GLOB_ERR, NULL, &result);
+    switch (ret) {
+    case 0:
+        break;
+
+    case GLOB_NOMATCH:
+        return error_s::ok();
+
+    case GLOB_NOSPACE:
+        return error_s::make(ERR_FS_INTERNAL, "glob out of memory");
+
+    default:
+        std::string error(errno == 0 ? "unknown error" : safe_strerror(errno));
+        return error_s::make(ERR_FS_INTERNAL,
+                             fmt::format("glob failed for '{}': {}", path_pattern, error));
+    }
+
+    for (size_t i = 0; i < result.gl_pathc; ++i) {
+        path_list.emplace_back(result.gl_pathv[i]);
+    }
+
+    return error_s::ok();
 }
 
 } // namespace filesystem

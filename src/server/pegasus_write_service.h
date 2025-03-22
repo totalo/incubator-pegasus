@@ -21,17 +21,13 @@
 
 #include <cstdint>
 #include <memory>
-#include <vector>
 
-#include "common//duplication_common.h"
-#include "common/common.h"
-#include "perf_counter/perf_counter_wrapper.h"
 #include "replica/replica_base.h"
-#include "utils/errors.h"
+#include "utils/metrics.h"
 
 namespace dsn {
 class blob;
-class perf_counter;
+
 namespace apps {
 class check_and_mutate_request;
 class check_and_mutate_response;
@@ -55,13 +51,6 @@ class ingestion_response;
 
 namespace pegasus {
 namespace server {
-
-inline uint8_t get_current_cluster_id()
-{
-    static const uint8_t cluster_id =
-        dsn::replication::get_duplication_cluster_id(dsn::get_current_cluster_name()).get_value();
-    return cluster_id;
-}
 
 // The context of an mutation to the database.
 struct db_write_context
@@ -147,7 +136,19 @@ public:
                      const dsn::apps::multi_remove_request &update,
                      dsn::apps::multi_remove_response &resp);
 
-    // Write INCR record.
+    // Translate an INCR request into an idempotent PUT request. Only called by primary
+    // replicas.
+    int make_idempotent(const dsn::apps::incr_request &req,
+                        dsn::apps::incr_response &err_resp,
+                        dsn::apps::update_request &update);
+
+    // Write an idempotent INCR record (i.e. a PUT record) and reply to the client with INCR
+    // response. Only called by primary replicas.
+    int put(const db_write_context &ctx,
+            const dsn::apps::update_request &update,
+            dsn::apps::incr_response &resp);
+
+    // Write a non-idempotent INCR record.
     int incr(int64_t decree, const dsn::apps::incr_request &update, dsn::apps::incr_response &resp);
 
     // Write CHECK_AND_SET record.
@@ -178,6 +179,8 @@ public:
     // Add PUT record in batch write.
     // \returns rocksdb::Status::Code.
     // NOTE that `resp` should not be moved or freed while the batch is not committed.
+    // When called by secondary replicas, this put request may be translated from an incr
+    // request for idempotence.
     int batch_put(const db_write_context &ctx,
                   const dsn::apps::update_request &update,
                   dsn::apps::update_response &resp);
@@ -198,11 +201,11 @@ public:
     void set_default_ttl(uint32_t ttl);
 
 private:
-    void clear_up_batch_states();
+    // Finish batch write with metrics such as latencies calculated and some states cleared.
+    void batch_finish();
 
-private:
     friend class pegasus_write_service_test;
-    friend class pegasus_write_service_impl_test;
+    friend class PegasusWriteServiceImplTest;
     friend class pegasus_server_write_test;
     friend class rocksdb_wrapper_test;
 
@@ -214,32 +217,59 @@ private:
 
     uint64_t _batch_start_time;
 
+    // Only used for primary replica to calculate the duration that an incr request from
+    // the client is translated into an idempotent put request before appended to plog,
+    // including reading the current value from RocksDB and incrementing it by a given
+    // amount.
+    //
+    // This variable is defined as per-replica rather than per-request, for the reason
+    // that the current design for implementing idempotence is to make sure there is only
+    // one atomic request being processed in the write pipeline for each replica. This
+    // pipeline consists of the following stages:
+    // (1) read the current value from RocksDB and built the idempotent request based on
+    // it;
+    // (2) append the corresponding mutation to plog;
+    // (3) broadcast the prepare requests;
+    // (4) apply the result for atomic operation back to RocksDB ultimately.
+    // For a request, this variable will be set in stage (1) and read in stage (4); since
+    // there is only one request in the pipeline, this variable is guaranteed not to be
+    // set for another request before stage (4) is finished. Therefore, it is safe to
+    // define this variable as per-replica.
+    uint64_t _make_incr_idempotent_duration_ns;
+
     capacity_unit_calculator *_cu_calculator;
 
-    ::dsn::perf_counter_wrapper _pfc_put_qps;
-    ::dsn::perf_counter_wrapper _pfc_multi_put_qps;
-    ::dsn::perf_counter_wrapper _pfc_remove_qps;
-    ::dsn::perf_counter_wrapper _pfc_multi_remove_qps;
-    ::dsn::perf_counter_wrapper _pfc_incr_qps;
-    ::dsn::perf_counter_wrapper _pfc_check_and_set_qps;
-    ::dsn::perf_counter_wrapper _pfc_check_and_mutate_qps;
-    ::dsn::perf_counter_wrapper _pfc_duplicate_qps;
-    ::dsn::perf_counter_wrapper _pfc_dup_time_lag;
-    ::dsn::perf_counter_wrapper _pfc_dup_lagging_writes;
+    METRIC_VAR_DECLARE_counter(put_requests);
+    METRIC_VAR_DECLARE_counter(multi_put_requests);
+    METRIC_VAR_DECLARE_counter(remove_requests);
+    METRIC_VAR_DECLARE_counter(multi_remove_requests);
+    METRIC_VAR_DECLARE_counter(incr_requests);
+    METRIC_VAR_DECLARE_counter(check_and_set_requests);
+    METRIC_VAR_DECLARE_counter(check_and_mutate_requests);
 
-    ::dsn::perf_counter_wrapper _pfc_put_latency;
-    ::dsn::perf_counter_wrapper _pfc_multi_put_latency;
-    ::dsn::perf_counter_wrapper _pfc_remove_latency;
-    ::dsn::perf_counter_wrapper _pfc_multi_remove_latency;
-    ::dsn::perf_counter_wrapper _pfc_incr_latency;
-    ::dsn::perf_counter_wrapper _pfc_check_and_set_latency;
-    ::dsn::perf_counter_wrapper _pfc_check_and_mutate_latency;
+    METRIC_VAR_DECLARE_percentile_int64(put_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(multi_put_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(remove_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(multi_remove_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(incr_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(check_and_set_latency_ns);
+    METRIC_VAR_DECLARE_percentile_int64(check_and_mutate_latency_ns);
 
-    // Records all requests.
-    std::vector<::dsn::perf_counter *> _batch_qps_perfcounters;
-    std::vector<::dsn::perf_counter *> _batch_latency_perfcounters;
+    METRIC_VAR_DECLARE_counter(dup_requests);
+    METRIC_VAR_DECLARE_percentile_int64(dup_time_lag_ms);
+    METRIC_VAR_DECLARE_counter(dup_lagging_writes);
 
-    // TODO(wutao1): add perf counters for failed rpc.
+    // Measure the size of single-put requests in batch applied into RocksDB for metrics.
+    uint32_t _put_batch_size;
+
+    // Measure the size of single-remove requests in batch applied into RocksDB for metrics.
+    uint32_t _remove_batch_size;
+
+    // Measure the size of incr requests (with each translated into an idempotent put request)
+    // in batch applied into RocksDB for metrics.
+    uint32_t _incr_batch_size;
+
+    // TODO(wutao1): add metrics for failed rpc.
 };
 
 } // namespace server

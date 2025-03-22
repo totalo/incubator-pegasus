@@ -32,10 +32,10 @@
 #include <limits>
 #include <string>
 
+#include "common/gpid.h"
 #include "gtest/gtest.h"
 #include "test_util/test_util.h"
 #include "utils/env.h"
-#include "utils/error_code.h"
 #include "utils/filesystem.h"
 #include "utils/flags.h"
 #include "utils/rand.h"
@@ -76,7 +76,7 @@ class env_file_test : public pegasus::encrypt_data_test_base
 {
 };
 
-INSTANTIATE_TEST_CASE_P(, env_file_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, env_file_test, ::testing::Values(false, true));
 
 TEST_P(env_file_test, encrypt_file_2_files)
 {

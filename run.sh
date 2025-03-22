@@ -18,16 +18,28 @@
 
 set -e
 
-LOCAL_HOSTNAME=`hostname -f`
+LOCAL_HOSTNAME=$(hostname -f)
 PID=$$
-ROOT=`pwd`
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 export BUILD_ROOT_DIR=${ROOT}/build
 export BUILD_LATEST_DIR=${BUILD_ROOT_DIR}/latest
 export REPORT_DIR="$ROOT/test_report"
-export THIRDPARTY_ROOT=$ROOT/thirdparty
-export LD_LIBRARY_PATH=$JAVA_HOME/jre/lib/amd64/server:${BUILD_LATEST_DIR}/output/lib:${THIRDPARTY_ROOT}/output/lib:${LD_LIBRARY_PATH}
+# It's possible to specify THIRDPARTY_ROOT by setting the environment variable PEGASUS_THIRDPARTY_ROOT.
+export THIRDPARTY_ROOT=${PEGASUS_THIRDPARTY_ROOT:-"$ROOT/thirdparty"}
+ARCH_TYPE=''
+arch_output=$(arch)
+if [ "$arch_output"x == "aarch64"x ]; then
+    ARCH_TYPE="aarch64"
+else
+    if [ "$arch_output"x != "x86_64"x ]; then
+        echo "WARNING: unrecognized CPU architecture '$arch_output', use 'x86_64' as default"
+    fi
+    ARCH_TYPE="amd64"
+fi
+export LD_LIBRARY_PATH=${JAVA_HOME}/jre/lib/${ARCH_TYPE}:${JAVA_HOME}/jre/lib/${ARCH_TYPE}/server:${BUILD_LATEST_DIR}/output/lib:${THIRDPARTY_ROOT}/output/lib:${LD_LIBRARY_PATH}
 # Disable AddressSanitizerOneDefinitionRuleViolation, see https://github.com/google/sanitizers/issues/1017 for details.
-export ASAN_OPTIONS=detect_odr_violation=0
+# Add parameters in order to be able to generate coredump file when run ASAN tests
+export ASAN_OPTIONS=detect_odr_violation=0:abort_on_error=1:disable_coredump=0:unmap_shadow_on_exit=1
 # See https://github.com/gperftools/gperftools/wiki/gperftools'-stacktrace-capturing-methods-and-their-issues.
 # Now we choose libgcc, because of https://github.com/apache/incubator-pegasus/issues/1685.
 export TCMALLOC_STACKTRACE_METHOD=libgcc  # Can be generic_fp, generic_fp_unsafe, libunwind or libgcc
@@ -81,6 +93,9 @@ function usage_build()
 {
     echo "Options for subcommand 'build':"
     echo "   -h|--help             print the help info"
+    echo "   -m|--modules          specify modules to build, split by ',',"
+    echo "                         e.g., \"pegasus_unit_test,dsn_runtime_tests,dsn_meta_state_tests\","
+    echo "                         if not set, then build all objects"
     echo "   -t|--type             build type: debug|release, default is release"
     echo "   -c|--clear            clear pegasus before building, not clear thirdparty"
     echo "   --clear_thirdparty    clear thirdparty/pegasus before building"
@@ -93,12 +108,14 @@ function usage_build()
     echo "   --disable_gperf       build without gperftools, this flag is mainly used"
     echo "                         to enable valgrind memcheck, default no"
     echo "   --use_jemalloc        build with jemalloc"
+    echo "   --separate_servers    whether to build pegasus_collector，pegasus_meta_server and pegasus_replica_server binaries separately, otherwise a combined pegasus_server binary will be built"
     echo "   --sanitizer <type>    build with sanitizer to check potential problems,
                                    type: address|leak|thread|undefined"
     echo "   --skip_thirdparty     whether to skip building thirdparties, default no"
     echo "   --enable_rocksdb_portable      build a portable rocksdb binary"
     echo "   --test                whether to build test binaries"
     echo "   --iwyu                specify the binary path of 'include-what-you-use' when build with IWYU"
+    echo "   --cmake_only          whether to run cmake only, default no"
 }
 
 function exit_if_fail() {
@@ -116,6 +133,7 @@ function run_build()
     C_COMPILER="gcc"
     CXX_COMPILER="g++"
     BUILD_TYPE="release"
+    # TODO(yingchun): some boolean variables are using YES/NO, some are using ON/OFF, should be unified.
     CLEAR=NO
     CLEAR_THIRDPARTY=NO
     JOB_NUM=8
@@ -126,14 +144,21 @@ function run_build()
     SANITIZER=""
     ROCKSDB_PORTABLE=0
     USE_JEMALLOC=OFF
+    SEPARATE_SERVERS=OFF
     BUILD_TEST=OFF
     IWYU=""
+    BUILD_MODULES=""
+    CMAKE_ONLY=NO
     while [[ $# > 0 ]]; do
         key="$1"
         case $key in
             -h|--help)
                 usage_build
                 exit 0
+                ;;
+            -m|--modules)
+                BUILD_MODULES=$2
+                shift
                 ;;
             -t|--type)
                 BUILD_TYPE="$2"
@@ -189,12 +214,18 @@ function run_build()
                 ENABLE_GPERF=OFF
                 USE_JEMALLOC=ON
                 ;;
+            --separate_servers)
+                SEPARATE_SERVERS=ON
+                ;;
             --test)
                 BUILD_TEST=ON
                 ;;
             --iwyu)
                 IWYU="$2"
                 shift
+                ;;
+            --cmake_only)
+                CMAKE_ONLY=YES
                 ;;
             *)
                 echo "ERROR: unknown option \"$key\""
@@ -213,9 +244,16 @@ function run_build()
         exit 1
     fi
 
+    # Replace all ',' to ' ' in $BUILD_MODULES.
+    if [ "$BUILD_MODULES" != "" ]; then
+        BUILD_MODULES=${BUILD_MODULES//,/ }
+    fi
+    echo "build_modules=$BUILD_MODULES"
+
     CMAKE_OPTIONS="-DCMAKE_C_COMPILER=${C_COMPILER}
                    -DCMAKE_CXX_COMPILER=${CXX_COMPILER}
-                   -DUSE_JEMALLOC=${USE_JEMALLOC}"
+                   -DUSE_JEMALLOC=${USE_JEMALLOC}
+                   -DSEPARATE_SERVERS=${SEPARATE_SERVERS}"
 
     echo "BUILD_TYPE=$BUILD_TYPE"
     if [ "$BUILD_TYPE" == "debug" ]
@@ -227,6 +265,7 @@ function run_build()
 
     if [ ! -z "${SANITIZER}" ]; then
         CMAKE_OPTIONS="${CMAKE_OPTIONS} -DSANITIZER=${SANITIZER}"
+        echo "ASAN_OPTIONS=$ASAN_OPTIONS"
     fi
 
     MAKE_OPTIONS="-j$JOB_NUM"
@@ -286,8 +325,8 @@ function run_build()
     if [ ! -f "${ROOT}/src/common/serialization_helper/dsn.layer2_types.h" ]; then
         echo "Gen thrift"
         # TODO(yingchun): should be optimized
-        python3 $ROOT/scripts/compile_thrift.py
-        sh ${ROOT}/scripts/recompile_thrift.sh
+        python3 $ROOT/build_tools/compile_thrift.py
+        sh ${ROOT}/build_tools/recompile_thrift.sh
     fi
 
     if [ ! -d "$BUILD_DIR" ]; then
@@ -321,10 +360,17 @@ function run_build()
     rm -f ${BUILD_LATEST_DIR}
     ln -s ${BUILD_DIR} ${BUILD_LATEST_DIR}
 
+    if [ "$CMAKE_ONLY" == "YES" ]; then
+        echo "CMake only, exit"
+        return
+    fi
+
     echo "[$(date)] Building Pegasus ..."
     pushd $BUILD_DIR
     if [ ! -z "${IWYU}" ]; then
         make $MAKE_OPTIONS 2> iwyu.out
+    elif [ "$BUILD_MODULES" != "" ]; then
+        make $BUILD_MODULES $MAKE_OPTIONS
     else
         make install $MAKE_OPTIONS
     fi
@@ -360,7 +406,11 @@ function run_test()
       base_api_test
       base_test
       bulk_load_test
-      detect_hotspot_test
+      # TODO(wangdan): Since the hotspot detection depends on the perf-counters system which
+      # is being replaced with the new metrics system, its test will fail. Temporarily disable
+      # the test and re-enable it after the hotspot detection is migrated to the new metrics
+      # system.
+      # detect_hotspot_test
       dsn_aio_test
       dsn_block_service_test
       dsn_client_test
@@ -369,7 +419,9 @@ function run_test()
       dsn_meta_state_tests
       dsn.meta.test
       dsn_nfs_test
-      dsn_perf_counter_test
+      # TODO(wangdan): Since builtin_counters (memused.virt and memused.res) for perf-counters
+      # have been removed and dsn_perf_counter_test depends on them, disable it.
+      # dsn_perf_counter_test
       dsn_replica_backup_test
       dsn_replica_bulk_load_test
       dsn_replica_dup_test
@@ -433,23 +485,15 @@ function run_test()
         mkdir -p $REPORT_DIR
     fi
 
+    # Run all tests if none specified.
     if [ "$test_modules" == "" ]; then
         test_modules=$(IFS=,; echo "${all_tests[*]}")
     fi
     echo "test_modules=$test_modules"
 
-    # download bulk load test data
-    if [[ "$test_modules" =~ "bulk_load_test" && ! -d "$ROOT/src/test/function_test/bulk_load/pegasus-bulk-load-function-test-files" ]]; then
-        echo "Start to download files used for bulk load function test"
-        wget "https://github.com/XiaoMi/pegasus-common/releases/download/deps/pegasus-bulk-load-function-test-files.zip"
-        unzip "pegasus-bulk-load-function-test-files.zip" -d "$ROOT/src/test/function_test/bulk_load"
-        rm "pegasus-bulk-load-function-test-files.zip"
-        echo "Prepare files used for bulk load function test succeed"
-    fi
-
     for module in `echo $test_modules | sed 's/,/ /g'`; do
         echo "====================== run $module =========================="
-        # restart onebox when test pegasus
+        # The tests which need start onebox.
         local need_onebox_tests=(
           backup_restore_test
           base_api_test
@@ -462,37 +506,62 @@ function run_test()
           restore_test
           throttle_test
         )
+        # Restart onebox if needed.
         if [[ "${need_onebox_tests[@]}" =~ "${module}" ]]; then
+            # Clean up onebox at first.
             run_clear_onebox
-            m_count=3
+            master_count=3
+            # Update options if needed, this should be done before starting onebox to make new options take effect.
             if [ "${module}" == "recovery_test" ]; then
-                m_count=1
-                opts="meta_state_service_type=meta_state_service_simple,distributed_lock_service_type=distributed_lock_service_simple"
+                master_count=1
+                # all test case in recovery_test just run one meta_server, so we should change it
+                fqdn=`hostname -f`
+                opts="server_list=$fqdn:34601;meta_state_service_type=meta_state_service_simple;distributed_lock_service_type=distributed_lock_service_simple"
             fi
             if [ "${module}" == "backup_restore_test" ]; then
-                opts="cold_backup_disabled=false,cold_backup_checkpoint_reserve_minutes=0,cold_backup_root=onebox"
+                opts="cold_backup_disabled=false;cold_backup_checkpoint_reserve_minutes=0;cold_backup_root=onebox"
             fi
             if [ "${module}" == "restore_test" ]; then
-                opts="cold_backup_disabled=false,cold_backup_checkpoint_reserve_minutes=0,cold_backup_root=onebox"
+                opts="cold_backup_disabled=false;cold_backup_checkpoint_reserve_minutes=0;cold_backup_root=onebox"
             fi
-            [ -z ${onebox_opts} ] || opts="${opts},${onebox_opts}"
-            if ! run_start_onebox -m ${m_count} -w -c --opts ${opts}; then
+            # Append onebox_opts if needed.
+            [ -z ${onebox_opts} ] || opts="${opts};${onebox_opts}"
+            # Start onebox.
+            if ! run_start_onebox -m ${master_count} -w -c --opts ${opts}; then
                 echo "ERROR: unable to continue on testing because starting onebox failed"
                 exit 1
             fi
             # TODO(yingchun): remove it?
             sed -i "s/@LOCAL_HOSTNAME@/${LOCAL_HOSTNAME}/g"  ${BUILD_LATEST_DIR}/src/server/test/config.ini
         else
+            # Restart ZK in what ever case.
             run_stop_zk
             run_start_zk
         fi
+
+        # Run server test.
         pushd ${BUILD_LATEST_DIR}/bin/${module}
+        local function_tests=(
+	      backup_restore_test
+	      recovery_test
+	      restore_test
+	      base_api_test
+	      throttle_test
+	      bulk_load_test
+	      detect_hotspot_test
+	      partition_split_test
+        )
+        # function_tests need client used meta_server_list to connect
+        if [[ "${function_tests[@]}"  =~ "${module}" ]]; then
+          sed -i "s/@LOCAL_HOSTNAME@/${LOCAL_HOSTNAME}/g"  ./config.ini
+        fi
         REPORT_DIR=${REPORT_DIR} TEST_BIN=${module} TEST_OPTS=${test_opts} ./run.sh
         if [ $? != 0 ]; then
             echo "run test \"$module\" in `pwd` failed"
             exit 1
         fi
-        # clear onebox if needed
+
+        # Clear onebox if needed.
         if [[ "${need_onebox_tests[@]}"  =~ "${test_modules}" ]]; then
             if [ "$clear_flags" == "1" ]; then
                 run_clear_onebox
@@ -506,6 +575,7 @@ function run_test()
     used_time=$((finish_time-start_time))
     echo "Test elapsed time: $((used_time/60))m $((used_time%60))s"
 
+    # TODO(yingchun): make sure if gcov can be ran normally.
     if [ "$enable_gcov" == "yes" ]; then
         echo "Generating gcov report..."
         cd $ROOT
@@ -587,7 +657,7 @@ function run_start_zk()
         fi
     fi
 
-    INSTALL_DIR="$INSTALL_DIR" PORT="$PORT" $ROOT/scripts/start_zk.sh
+    INSTALL_DIR="$INSTALL_DIR" PORT="$PORT" $ROOT/admin_tools/start_zk.sh
 }
 
 #####################
@@ -624,7 +694,7 @@ function run_stop_zk()
         esac
         shift
     done
-    INSTALL_DIR="$INSTALL_DIR" $ROOT/scripts/stop_zk.sh
+    INSTALL_DIR="$INSTALL_DIR" $ROOT/admin_tools/stop_zk.sh
 }
 
 #####################
@@ -661,7 +731,7 @@ function run_clear_zk()
         esac
         shift
     done
-    INSTALL_DIR="$INSTALL_DIR" $ROOT/scripts/clear_zk.sh
+    INSTALL_DIR="$INSTALL_DIR" $ROOT/admin_tools/clear_zk.sh
 }
 
 #####################
@@ -784,7 +854,7 @@ function run_start_onebox()
         exit 1
     fi
 
-    source "${ROOT}"/scripts/config_hdfs.sh
+    source "${ROOT}"/admin_tools/config_hdfs.sh
     if [ $USE_PRODUCT_CONFIG == "true" ]; then
         [ -z "${CONFIG_FILE}" ] && CONFIG_FILE=${ROOT}/src/server/config.ini
         [ ! -f "${CONFIG_FILE}" ] && { echo "${CONFIG_FILE} is not exist"; exit 1; }
@@ -820,7 +890,7 @@ function run_start_onebox()
     fi
 
     OPTS=`echo $OPTS | xargs`
-    config_kvs=(${OPTS//,/ })
+    config_kvs=(${OPTS//;/ })
     for config_kv in ${config_kvs[@]}; do
         config_kv=`echo $config_kv | xargs`
         kv=(${config_kv//=/ })
@@ -1028,7 +1098,7 @@ function run_start_onebox_instance()
         esac
         shift
     done
-    source "${ROOT}"/scripts/config_hdfs.sh
+    source "${ROOT}"/admin_tools/config_hdfs.sh
     if [ $META_ID = "0" -a $REPLICA_ID = "0" -a $COLLECTOR_ID = "0" ]; then
         echo "ERROR: no meta_id or replica_id or collector set"
         exit 1
@@ -1567,9 +1637,19 @@ function run_bench()
         shift
     done
     cd ${ROOT}
-    cp ${BUILD_LATEST_DIR}/output/bin/pegasus_bench/config.ini ./config-bench.ini
+    if [ -f ${ROOT}/bin/pegasus_bench/pegasus_bench ]; then
+        # The pegasus_bench was packaged by pack_tools, to be used on production environment.
+        ln -s -f ${ROOT}/bin/pegasus_bench/pegasus_bench
+        cp -a ${ROOT}/bin/pegasus_bench/config.ini ./config-bench.ini
+    elif [ -f ${BUILD_LATEST_DIR}/output/bin/pegasus_bench/pegasus_bench ]; then
+        # The pegasus_bench was built locally, to be used for test on development environment.
+        ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_bench/pegasus_bench
+        cp -a ${BUILD_LATEST_DIR}/output/bin/pegasus_bench/config.ini ./config-bench.ini
+    else
+        echo "ERROR: pegasus_bench could not be found"
+        exit 1
+    fi
     fill_bench_config
-    ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_bench/pegasus_bench
     ./pegasus_bench ./config-bench.ini
     rm -f ./config-bench.ini
 }
@@ -1696,7 +1776,18 @@ function run_shell()
     fi
 
     cd ${ROOT}
-    ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_shell/pegasus_shell
+    if [ -f ${ROOT}/bin/pegasus_shell/pegasus_shell ]; then
+        # The pegasus_shell was packaged by pack_tools, to be used on production environment.
+        if test ! -f ./pegasus_shell; then
+            ln -s -f ${ROOT}/bin/pegasus_shell/pegasus_shell
+        fi
+    elif [ -f ${BUILD_LATEST_DIR}/output/bin/pegasus_shell/pegasus_shell ]; then
+        # The pegasus_shell was built locally, to be used for test on development environment.
+        ln -s -f ${BUILD_LATEST_DIR}/output/bin/pegasus_shell/pegasus_shell
+    else
+        echo "ERROR: pegasus_shell could not be found"
+        exit 1
+    fi
     ./pegasus_shell ${CONFIG} $CLUSTER_NAME
     # because pegasus shell will catch 'Ctrl-C' signal, so the following commands will be executed
     # even user inputs 'Ctrl-C', so that the temporary config file will be cleared when exit shell.
@@ -1797,9 +1888,9 @@ function run_migrate_node()
     cd ${ROOT}
     echo "------------------------------"
     if [ "$CLUSTER" != "" ]; then
-        ./scripts/migrate_node.sh $CLUSTER $NODE "$APP" $TYPE
+        ./admin_tools/migrate_node.sh $CLUSTER $NODE "$APP" $TYPE
     else
-        ./scripts/migrate_node.sh $CONFIG $NODE "$APP" $TYPE -f
+        ./admin_tools/migrate_node.sh $CONFIG $NODE "$APP" $TYPE -f
     fi
     echo "------------------------------"
     echo
@@ -1905,9 +1996,9 @@ function run_downgrade_node()
     cd ${ROOT}
     echo "------------------------------"
     if [ "$CLUSTER" != "" ]; then
-        ./scripts/downgrade_node.sh $CLUSTER $NODE "$APP" $TYPE
+        ./admin_tools/downgrade_node.sh $CLUSTER $NODE "$APP" $TYPE
     else
-        ./scripts/downgrade_node.sh $CONFIG $NODE "$APP" $TYPE -f
+        ./admin_tools/downgrade_node.sh $CONFIG $NODE "$APP" $TYPE -f
     fi
     echo "------------------------------"
     echo
@@ -2015,19 +2106,21 @@ case $cmd in
         ;;
     pack_server)
         shift
-        PEGASUS_ROOT=$ROOT ./scripts/pack_server.sh $*
+        # source the config_hdfs.sh to get the HADOOP_HOME.
+        source "${ROOT}"/admin_tools/config_hdfs.sh
+        PEGASUS_ROOT=$ROOT ./build_tools/pack_server.sh $*
         ;;
     pack_client)
         shift
-        PEGASUS_ROOT=$ROOT ./scripts/pack_client.sh $*
+        PEGASUS_ROOT=$ROOT ./build_tools/pack_client.sh $*
         ;;
     pack_tools)
         shift
-        PEGASUS_ROOT=$ROOT ./scripts/pack_tools.sh $*
+        PEGASUS_ROOT=$ROOT ./build_tools/pack_tools.sh $*
         ;;
     bump_version)
         shift
-        ./scripts/bump_version.sh $*
+        ./build_tools/bump_version.sh $*
         ;;
     *)
         echo "ERROR: unknown command $cmd"

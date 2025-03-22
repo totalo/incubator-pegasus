@@ -22,6 +22,7 @@
 #include <map>
 #include <ostream>
 #include <string>
+#include <vector>
 
 #include "bulk_load_types.h"
 #include "common/replication_other_types.h"
@@ -29,8 +30,9 @@
 #include "replica/replica.h"
 #include "replica/replica_base.h"
 #include "runtime/api_layer1.h"
-#include "runtime/task/task.h"
+#include "task/task.h"
 #include "utils/error_code.h"
+#include "utils/metrics.h"
 #include "utils/zlocks.h"
 
 namespace dsn {
@@ -88,10 +90,11 @@ private:
     // download sst files from remote provider
     void download_sst_file(const std::string &remote_dir,
                            const std::string &local_dir,
-                           int32_t file_index,
+                           std::vector<::dsn::replication::file_meta> &&download_file_metas,
                            dist::block_service::block_filesystem *fs);
 
-    // \return ERR_FILE_OPERATION_FAILED: file not exist, get size failed, open file failed
+    // \return ERR_PATH_NOT_FOUND: file not exist
+    // \return ERR_FILE_OPERATION_FAILED: get size failed, open file failed
     // \return ERR_CORRUPTION: parse failed
     // need to acquire write lock while calling it
     error_code parse_bulk_load_metadata(const std::string &fname);
@@ -192,8 +195,17 @@ private:
     std::map<std::string, task_ptr> _download_files_task;
     // download metadata and create download file tasks
     task_ptr _download_task;
-    // Used for perf-counter
+
+    // Used for metrics.
     uint64_t _bulk_load_start_time_ms{0};
+
+    METRIC_VAR_DECLARE_counter(bulk_load_downloading_count);
+    METRIC_VAR_DECLARE_counter(bulk_load_ingesting_count);
+    METRIC_VAR_DECLARE_counter(bulk_load_successful_count);
+    METRIC_VAR_DECLARE_counter(bulk_load_failed_count);
+    METRIC_VAR_DECLARE_counter(bulk_load_download_file_successful_count);
+    METRIC_VAR_DECLARE_counter(bulk_load_download_file_failed_count);
+    METRIC_VAR_DECLARE_counter(bulk_load_download_file_bytes);
 };
 
 } // namespace replication

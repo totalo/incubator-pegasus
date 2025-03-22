@@ -28,7 +28,6 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -40,7 +39,9 @@
 
 #include "http/http_method.h"
 #include "http/http_server.h"
+#include "http/http_status_code.h"
 #include "runtime/api_layer1.h"
+#include "utils/api_utilities.h"
 #include "utils/blob.h"
 #include "utils/defer.h"
 #include "utils/fmt_logging.h"
@@ -97,8 +98,7 @@ static bool has_ext(const std::string &name, const std::string &ext)
 static int extract_symbols_from_binary(std::map<uintptr_t, std::string> &addr_map,
                                        const lib_info &lib_info)
 {
-    timer tm;
-    tm.start();
+    SCOPED_LOG_TIMING(INFO, "load {}", lib_info.path);
     std::string cmd = "nm -C -p ";
     cmd.append(lib_info.path);
     std::stringstream ss;
@@ -190,15 +190,12 @@ static int extract_symbols_from_binary(std::map<uintptr_t, std::string> &addr_ma
     if (addr_map.find(lib_info.end_addr) == addr_map.end()) {
         addr_map[lib_info.end_addr] = std::string();
     }
-    tm.stop();
-    LOG_INFO("Loaded {} in {}ms", lib_info.path, tm.m_elapsed().count());
     return 0;
 }
 
 static void load_symbols()
 {
-    timer tm;
-    tm.start();
+    SCOPED_LOG_TIMING(INFO, "load all symbols");
     auto fp = fopen("/proc/self/maps", "r");
     if (fp == nullptr) {
         return;
@@ -269,9 +266,8 @@ static void load_symbols()
     info.path = program_invocation_name;
     extract_symbols_from_binary(symbol_map, info);
 
-    timer tm2;
-    tm2.start();
     size_t num_removed = 0;
+    LOG_TIMING_IF(INFO, num_removed > 0, "removed {} entries", num_removed);
     bool last_is_empty = false;
     for (auto it = symbol_map.begin(); it != symbol_map.end();) {
         if (it->second.empty()) {
@@ -286,13 +282,6 @@ static void load_symbols()
             ++it;
         }
     }
-    tm2.stop();
-    if (num_removed) {
-        LOG_INFO("Removed {} entries in {}ms", num_removed, tm2.m_elapsed().count());
-    }
-
-    tm.stop();
-    LOG_INFO("Loaded all symbols in {}ms", tm.m_elapsed().count());
 }
 
 static void find_symbols(std::string *out, std::vector<uintptr_t> &addr_list)
@@ -359,7 +348,7 @@ void pprof_http_service::heap_handler(const http_request &req, http_response &re
     bool in_pprof = false;
     if (!_in_pprof_action.compare_exchange_strong(in_pprof, true)) {
         LOG_WARNING("node is already exectuting pprof action, please wait and retry");
-        resp.status_code = http_status_code::internal_server_error;
+        resp.status_code = http_status_code::kInternalServerError;
         return;
     }
     auto cleanup = dsn::defer([this]() { _in_pprof_action.store(false); });
@@ -376,7 +365,7 @@ void pprof_http_service::heap_handler(const http_request &req, http_response &re
         if (IsHeapProfilerRunning()) {
             LOG_WARNING("heap profiling is running, dump the full profile directly");
             char *profile = GetHeapProfile();
-            resp.status_code = http_status_code::ok;
+            resp.status_code = http_status_code::kOk;
             resp.body = profile;
             free(profile);
             return;
@@ -390,7 +379,7 @@ void pprof_http_service::heap_handler(const http_request &req, http_response &re
         char *profile = GetHeapProfile();
         HeapProfilerStop();
 
-        resp.status_code = http_status_code::ok;
+        resp.status_code = http_status_code::kOk;
         resp.body = profile;
         free(profile);
     } else {
@@ -399,14 +388,14 @@ void pprof_http_service::heap_handler(const http_request &req, http_response &re
                                                  "TCMALLOC_SAMPLE_PARAMETER should set to a "
                                                  "positive value, such as 524288, before running.";
             LOG_WARNING(kNoEnvMsg);
-            resp.status_code = http_status_code::internal_server_error;
+            resp.status_code = http_status_code::kInternalServerError;
             resp.body = kNoEnvMsg;
             return;
         }
 
         std::string buf;
         MallocExtension::instance()->GetHeapSample(&buf);
-        resp.status_code = http_status_code::ok;
+        resp.status_code = http_status_code::kOk;
         resp.body = std::move(buf);
     }
 }
@@ -478,7 +467,7 @@ void pprof_http_service::growth_handler(const http_request &req, http_response &
     bool in_pprof = false;
     if (!_in_pprof_action.compare_exchange_strong(in_pprof, true)) {
         LOG_WARNING("node is already exectuting pprof action, please wait and retry");
-        resp.status_code = http_status_code::internal_server_error;
+        resp.status_code = http_status_code::kInternalServerError;
         return;
     }
 
@@ -492,12 +481,12 @@ void pprof_http_service::growth_handler(const http_request &req, http_response &
 //                             //
 // == ip:port/pprof/profile == //
 //                             //
-static bool get_cpu_profile(std::string &result, useconds_t seconds)
+static bool get_cpu_profile(std::string &result, useconds_t micro_seconds)
 {
     const char *file_name = "cpu.prof";
 
     ProfilerStart(file_name);
-    usleep(seconds);
+    usleep(micro_seconds);
     ProfilerStop();
 
     std::ifstream in(file_name);
@@ -521,11 +510,11 @@ void pprof_http_service::profile_handler(const http_request &req, http_response 
     bool in_pprof = false;
     if (!_in_pprof_action.compare_exchange_strong(in_pprof, true)) {
         LOG_WARNING("node is already exectuting pprof action, please wait and retry");
-        resp.status_code = http_status_code::internal_server_error;
+        resp.status_code = http_status_code::kInternalServerError;
         return;
     }
 
-    useconds_t seconds = 60000000;
+    useconds_t micro_seconds = 60000000;
 
     std::string req_url = req.full_url.to_string();
     size_t len = req.full_url.length();
@@ -537,16 +526,16 @@ void pprof_http_service::profile_handler(const http_request &req, http_response 
             std::string key(kv_sp.field(), kv_sp.length());
             if (kv_sp != NULL && key == "seconds" && ++kv_sp != NULL) {
                 char *end_ptr;
-                seconds = strtoul(kv_sp.field(), &end_ptr, 10) * 1000000;
+                micro_seconds = strtoul(kv_sp.field(), &end_ptr, 10) * 1000000;
                 break;
             }
             param_sp++;
         }
     }
 
-    resp.status_code = http_status_code::ok;
+    resp.status_code = http_status_code::kOk;
 
-    get_cpu_profile(resp.body, seconds);
+    get_cpu_profile(resp.body, micro_seconds);
 
     _in_pprof_action.store(false);
 }

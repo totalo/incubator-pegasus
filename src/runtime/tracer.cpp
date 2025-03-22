@@ -34,12 +34,13 @@
 #include <vector>
 
 #include "aio/aio_task.h"
+#include "fmt/core.h"
 #include "fmt/format.h"
+#include "rpc/rpc_message.h"
 #include "runtime/global_config.h"
-#include "runtime/rpc/rpc_message.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_code.h"
-#include "runtime/task/task_spec.h"
+#include "task/task.h"
+#include "task/task_code.h"
+#include "task/task_spec.h"
 #include "utils/command_manager.h"
 #include "utils/config_api.h"
 #include "utils/enum_helper.h"
@@ -48,10 +49,10 @@
 #include "utils/fmt_logging.h"
 #include "utils/join_point.h"
 
+DSN_DEFINE_bool(task..default, is_trace, false, "Whether to trace task");
+
 namespace dsn {
 namespace tools {
-
-DSN_DEFINE_bool(task..default, is_trace, false, "whether to trace tasks by default");
 
 static void tracer_on_task_create(task *caller, task *callee)
 {
@@ -259,8 +260,6 @@ static std::string tracer_log_flow_error(const char *msg)
 
 static std::string tracer_log_flow(const std::vector<std::string> &args)
 {
-    // forward|f|backward|b rpc|r|task|t trace_id|task_id(e.g., 002a003920302390)
-    // log_file_name(log.xx.txt)
     if (args.size() < 4) {
         return tracer_log_flow_error("not enough arguments");
     }
@@ -302,8 +301,7 @@ void tracer::install(service_spec &spec)
         if (i == TASK_CODE_INVALID)
             continue;
 
-        std::string section_name =
-            std::string("task.") + std::string(dsn::task_code(i).to_string());
+        std::string section_name = fmt::format("task.{}", dsn::task_code(i));
         task_spec *spec = task_spec::get(i);
         CHECK_NOTNULL(spec, "");
 
@@ -406,11 +404,11 @@ void tracer::install(service_spec &spec)
 
     static std::once_flag flag;
     std::call_once(flag, [&]() {
-        _tracer_find_cmd = command_manager::instance().register_command(
-            {"tracer.find"},
-            "tracer.find - find related logs",
-            "tracer.find forward|f|backward|b rpc|r|task|t trace_id|task_id(e.g., "
-            "a023003920302390) log_file_name(log.xx.txt)",
+        _tracer_find_cmd = command_manager::instance().register_single_command(
+            "tracer.find",
+            "Find related logs",
+            "[forward|f|backward|b] [rpc|r|task|t] [trace_id|task_id(e.g., a023003920302390)] "
+            "<log_file_name(e.g., replica.log.yyyyMMdd_hhmmss_SSS)>",
             tracer_log_flow);
     });
 }

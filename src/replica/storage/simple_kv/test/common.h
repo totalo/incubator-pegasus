@@ -37,7 +37,7 @@
 #include "common/gpid.h"
 #include "common/replication_other_types.h"
 #include "metadata_types.h"
-#include "runtime/rpc/rpc_address.h"
+#include "rpc/rpc_host_port.h"
 #include "utils/fmt_utils.h"
 
 namespace dsn {
@@ -55,14 +55,13 @@ const char *partition_status_to_short_string(partition_status::type s);
 partition_status::type partition_status_from_short_string(const std::string &str);
 
 // transfer primary_address to node_name
-// return "-" if addr.is_invalid()
+// return "-" if addr is invalid
 // return "node@port" if not found
-std::string address_to_node(rpc_address addr);
+std::string address_to_node(host_port addr);
 // transfer node_name to primary_address
 // return invalid addr if not found
-rpc_address node_to_address(const std::string &name);
+host_port node_to_address(const std::string &name);
 
-std::string gpid_to_string(gpid gpid);
 bool gpid_from_string(const std::string &str, gpid &gpid);
 
 struct replica_id
@@ -128,6 +127,10 @@ struct replica_state
     bool operator!=(const replica_state &o) const { return !(*this == o); }
     std::string to_string() const;
     bool from_string(const std::string &str);
+    friend std::ostream &operator<<(std::ostream &os, const replica_state &rs)
+    {
+        return os << rs.to_string();
+    }
 };
 
 struct state_snapshot
@@ -195,16 +198,16 @@ struct parti_config
     bool operator<(const parti_config &o) const { return pid == o.pid && ballot < o.ballot; }
     std::string to_string() const;
     bool from_string(const std::string &str);
-    void convert_from(const partition_configuration &c);
+    void convert_from(const partition_configuration &pc);
 
     friend std::ostream &operator<<(std::ostream &os, const parti_config &pc)
     {
         return os << pc.to_string();
     }
 };
-}
-}
-}
+} // namespace test
+} // namespace replication
+} // namespace dsn
 
 USER_DEFINED_STRUCTURE_FORMATTER(::dsn::replication::test::parti_config);
 USER_DEFINED_STRUCTURE_FORMATTER(::dsn::replication::test::replica_id);

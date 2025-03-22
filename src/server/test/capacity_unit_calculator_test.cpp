@@ -31,13 +31,16 @@
 #include "pegasus_server_test_base.h"
 #include "replica_admin_types.h"
 #include "rrdb/rrdb_types.h"
-#include "runtime/rpc/rpc_message.h"
+#include "rpc/rpc_message.h"
 #include "server/capacity_unit_calculator.h"
 #include "server/hotkey_collector.h"
 #include "utils/autoref_ptr.h"
 #include "utils/blob.h"
 #include "utils/flags.h"
 #include "utils/token_bucket_throttling_controller.h"
+
+DSN_DECLARE_uint64(perf_counter_read_capacity_unit_size);
+DSN_DECLARE_uint64(perf_counter_write_capacity_unit_size);
 
 namespace dsn {
 namespace replication {
@@ -47,9 +50,6 @@ struct replica_base;
 
 namespace pegasus {
 namespace server {
-
-DSN_DECLARE_uint64(perf_counter_read_capacity_unit_size);
-DSN_DECLARE_uint64(perf_counter_write_capacity_unit_size);
 
 class mock_capacity_unit_calculator : public capacity_unit_calculator
 {
@@ -154,7 +154,7 @@ public:
     }
 };
 
-INSTANTIATE_TEST_CASE_P(, capacity_unit_calculator_test, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, capacity_unit_calculator_test, ::testing::Values(false, true));
 
 TEST_P(capacity_unit_calculator_test, init) { test_init(); }
 

@@ -24,14 +24,15 @@
 
 #include "backup_types.h"
 #include "common/json_helper.h"
-#include "runtime/task/task_tracker.h"
+#include "task/task_tracker.h"
 #include "utils/error_code.h"
 #include "utils/zlocks.h"
 
 namespace dsn {
 class blob;
 class gpid;
-class rpc_address;
+class host_port;
+
 namespace dist {
 namespace block_service {
 class block_filesystem;
@@ -96,7 +97,7 @@ private:
     void on_backup_reply(error_code err,
                          const backup_response &response,
                          gpid pid,
-                         const rpc_address &primary);
+                         const host_port &primary);
     void write_backup_info();
     void complete_current_backup();
     void handle_replica_backup_failed(const backup_response &response, const gpid pid);

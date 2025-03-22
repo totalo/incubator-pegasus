@@ -27,8 +27,8 @@
 #pragma once
 
 #include "runtime/service_app.h"
-#include "runtime/rpc/rpc_holder.h"
-#include "runtime/rpc/serialization.h"
+#include "rpc/rpc_holder.h"
+#include "rpc/serialization.h"
 
 namespace dsn {
 /*!
@@ -108,7 +108,7 @@ class serverlet
 {
 public:
     explicit serverlet(const char *nm);
-    virtual ~serverlet();
+    virtual ~serverlet() = default;
 
 protected:
     template <typename TRequest>
@@ -150,11 +150,6 @@ private:
 // ------------- inline implementation ----------------
 template <typename T>
 inline serverlet<T>::serverlet(const char *nm) : _name(nm)
-{
-}
-
-template <typename T>
-inline serverlet<T>::~serverlet()
 {
 }
 
@@ -247,4 +242,4 @@ inline void serverlet<T>::reply(dsn::message_ex *request, const TResponse &resp)
     dsn_rpc_reply(msg);
 }
 /*@}*/
-} // end namespace
+} // namespace dsn

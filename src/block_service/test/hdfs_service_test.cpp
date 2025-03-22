@@ -26,15 +26,16 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <fmt/printf.h>
 
 #include "block_service/block_service.h"
 #include "block_service/hdfs/hdfs_service.h"
 #include "gtest/gtest.h"
 #include "runtime/api_layer1.h"
-#include "runtime/task/async_calls.h"
-#include "runtime/task/task.h"
-#include "runtime/task/task_code.h"
-#include "runtime/task/task_tracker.h"
+#include "task/async_calls.h"
+#include "task/task.h"
+#include "task/task_code.h"
+#include "task/task_tracker.h"
 #include "test_util/test_util.h"
 #include "utils/autoref_ptr.h"
 #include "utils/blob.h"
@@ -47,9 +48,6 @@
 #include "utils/test_macros.h"
 #include "utils/threadpool_code.h"
 
-using namespace dsn;
-using namespace dsn::dist::block_service;
-
 DSN_DEFINE_string(hdfs_test, test_name_node, "", "hdfs name node");
 DSN_DEFINE_string(hdfs_test, test_backup_path, "", "path for uploading and downloading test files");
 
@@ -58,6 +56,9 @@ DSN_DEFINE_uint32(hdfs_test,
                   num_total_files_for_hdfs_concurrent_test,
                   64,
                   "number of total files for hdfs concurrent test");
+
+using namespace dsn;
+using namespace dsn::dist::block_service;
 
 DEFINE_TASK_CODE(LPC_TEST_HDFS, TASK_PRIORITY_HIGH, dsn::THREAD_POOL_DEFAULT)
 
@@ -124,7 +125,7 @@ void HDFSClientTest::write_test_files_async(const std::string &local_test_path,
     }
 }
 
-INSTANTIATE_TEST_CASE_P(, HDFSClientTest, ::testing::Values(false, true));
+INSTANTIATE_TEST_SUITE_P(, HDFSClientTest, ::testing::Values(false, true));
 
 TEST_P(HDFSClientTest, test_hdfs_read_write)
 {
@@ -143,20 +144,22 @@ TEST_P(HDFSClientTest, test_hdfs_read_write)
     // 1. clean up all old file in remote test directory.
     printf("clean up all old files.\n");
     remove_path_response rem_resp;
-    s->remove_path(remove_path_request{kRemoteTestPath, true},
-                   LPC_TEST_HDFS,
-                   [&rem_resp](const remove_path_response &resp) { rem_resp = resp; },
-                   nullptr)
+    s->remove_path(
+         remove_path_request{kRemoteTestPath, true},
+         LPC_TEST_HDFS,
+         [&rem_resp](const remove_path_response &resp) { rem_resp = resp; },
+         nullptr)
         ->wait();
     ASSERT_TRUE(dsn::ERR_OK == rem_resp.err || dsn::ERR_OBJECT_NOT_FOUND == rem_resp.err);
 
     // 2. create file.
     printf("test write operation.\n");
     create_file_response cf_resp;
-    s->create_file(create_file_request{kRemoteTestRWFile, false},
-                   LPC_TEST_HDFS,
-                   [&cf_resp](const create_file_response &r) { cf_resp = r; },
-                   nullptr)
+    s->create_file(
+         create_file_request{kRemoteTestRWFile, false},
+         LPC_TEST_HDFS,
+         [&cf_resp](const create_file_response &r) { cf_resp = r; },
+         nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, cf_resp.err);
 
@@ -164,10 +167,11 @@ TEST_P(HDFSClientTest, test_hdfs_read_write)
     dsn::blob bb(kTestBuffer.c_str(), 0, kTestBufferLength);
     write_response w_resp;
     cf_resp.file_handle
-        ->write(write_request{bb},
-                LPC_TEST_HDFS,
-                [&w_resp](const write_response &w) { w_resp = w; },
-                nullptr)
+        ->write(
+            write_request{bb},
+            LPC_TEST_HDFS,
+            [&w_resp](const write_response &w) { w_resp = w; },
+            nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, w_resp.err);
     ASSERT_EQ(kTestBufferLength, w_resp.written_size);
@@ -177,10 +181,11 @@ TEST_P(HDFSClientTest, test_hdfs_read_write)
     printf("test read just written contents.\n");
     read_response r_resp;
     cf_resp.file_handle
-        ->read(read_request{0, -1},
-               LPC_TEST_HDFS,
-               [&r_resp](const read_response &r) { r_resp = r; },
-               nullptr)
+        ->read(
+            read_request{0, -1},
+            LPC_TEST_HDFS,
+            [&r_resp](const read_response &r) { r_resp = r; },
+            nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, r_resp.err);
     ASSERT_EQ(kTestBufferLength, r_resp.buffer.length());
@@ -190,10 +195,11 @@ TEST_P(HDFSClientTest, test_hdfs_read_write)
     const uint64_t kOffset = 5;
     const int64_t kSize = 10;
     cf_resp.file_handle
-        ->read(read_request{kOffset, kSize},
-               LPC_TEST_HDFS,
-               [&r_resp](const read_response &r) { r_resp = r; },
-               nullptr)
+        ->read(
+            read_request{kOffset, kSize},
+            LPC_TEST_HDFS,
+            [&r_resp](const read_response &r) { r_resp = r; },
+            nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, r_resp.err);
     ASSERT_EQ(kSize, r_resp.buffer.length());
@@ -224,40 +230,44 @@ TEST_P(HDFSClientTest, test_upload_and_download)
     // 1. clean up all old file in remote test directory.
     printf("clean up all old files.\n");
     remove_path_response rem_resp;
-    s->remove_path(remove_path_request{kRemoteTestPath, true},
-                   LPC_TEST_HDFS,
-                   [&rem_resp](const remove_path_response &resp) { rem_resp = resp; },
-                   nullptr)
+    s->remove_path(
+         remove_path_request{kRemoteTestPath, true},
+         LPC_TEST_HDFS,
+         [&rem_resp](const remove_path_response &resp) { rem_resp = resp; },
+         nullptr)
         ->wait();
     ASSERT_TRUE(dsn::ERR_OK == rem_resp.err || dsn::ERR_OBJECT_NOT_FOUND == rem_resp.err);
 
     // 2. create file.
-    printf("create and upload: %s.\n", kRemoteTestFile.c_str());
+    fmt::printf("create and upload: {}.\n", kRemoteTestFile);
     create_file_response cf_resp;
-    s->create_file(create_file_request{kRemoteTestFile, true},
-                   LPC_TEST_HDFS,
-                   [&cf_resp](const create_file_response &r) { cf_resp = r; },
-                   nullptr)
+    s->create_file(
+         create_file_request{kRemoteTestFile, true},
+         LPC_TEST_HDFS,
+         [&cf_resp](const create_file_response &r) { cf_resp = r; },
+         nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, cf_resp.err);
 
     // 3. upload file.
     upload_response u_resp;
     cf_resp.file_handle
-        ->upload(upload_request{kLocalFile},
-                 LPC_TEST_HDFS,
-                 [&u_resp](const upload_response &r) { u_resp = r; },
-                 nullptr)
+        ->upload(
+            upload_request{kLocalFile},
+            LPC_TEST_HDFS,
+            [&u_resp](const upload_response &r) { u_resp = r; },
+            nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, u_resp.err);
     ASSERT_EQ(local_file_size, cf_resp.file_handle->get_size());
 
     // 4. list directory.
     ls_response l_resp;
-    s->list_dir(ls_request{kRemoteTestPath},
-                LPC_TEST_HDFS,
-                [&l_resp](const ls_response &resp) { l_resp = resp; },
-                nullptr)
+    s->list_dir(
+         ls_request{kRemoteTestPath},
+         LPC_TEST_HDFS,
+         [&l_resp](const ls_response &resp) { l_resp = resp; },
+         nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, l_resp.err);
     ASSERT_EQ(1, l_resp.entries->size());
@@ -266,20 +276,22 @@ TEST_P(HDFSClientTest, test_upload_and_download)
 
     // 5. download file.
     download_response d_resp;
-    printf("test download %s.\n", kRemoteTestFile.c_str());
-    s->create_file(create_file_request{kRemoteTestFile, false},
-                   LPC_TEST_HDFS,
-                   [&cf_resp](const create_file_response &resp) { cf_resp = resp; },
-                   nullptr)
+    fmt::printf("test download {}.\n", kRemoteTestFile);
+    s->create_file(
+         create_file_request{kRemoteTestFile, false},
+         LPC_TEST_HDFS,
+         [&cf_resp](const create_file_response &resp) { cf_resp = resp; },
+         nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, cf_resp.err);
     ASSERT_EQ(local_file_size, cf_resp.file_handle->get_size());
     std::string kLocalDownloadFile = "test_file_d";
     cf_resp.file_handle
-        ->download(download_request{kLocalDownloadFile, 0, -1},
-                   LPC_TEST_HDFS,
-                   [&d_resp](const download_response &resp) { d_resp = resp; },
-                   nullptr)
+        ->download(
+            download_request{kLocalDownloadFile, 0, -1},
+            LPC_TEST_HDFS,
+            [&d_resp](const download_response &resp) { d_resp = resp; },
+            nullptr)
         ->wait();
     ASSERT_EQ(dsn::ERR_OK, d_resp.err);
     ASSERT_EQ(local_file_size, d_resp.downloaded_size);
@@ -341,10 +353,11 @@ TEST_P(HDFSClientTest, test_concurrent_upload_download)
 
     printf("clean up all old files.\n");
     remove_path_response rem_resp;
-    s->remove_path(remove_path_request{"hdfs_concurrent_test", true},
-                   LPC_TEST_HDFS,
-                   [&rem_resp](const remove_path_response &resp) { rem_resp = resp; },
-                   nullptr)
+    s->remove_path(
+         remove_path_request{"hdfs_concurrent_test", true},
+         LPC_TEST_HDFS,
+         [&rem_resp](const remove_path_response &resp) { rem_resp = resp; },
+         nullptr)
         ->wait();
     ASSERT_TRUE(dsn::ERR_OK == rem_resp.err || dsn::ERR_OBJECT_NOT_FOUND == rem_resp.err);
 
@@ -353,10 +366,11 @@ TEST_P(HDFSClientTest, test_concurrent_upload_download)
         std::vector<block_file_ptr> block_files;
         for (int i = 0; i < total_files; ++i) {
             create_file_response cf_resp;
-            s->create_file(create_file_request{remote_file_names[i], true},
-                           LPC_TEST_HDFS,
-                           [&cf_resp](const create_file_response &resp) { cf_resp = resp; },
-                           nullptr)
+            s->create_file(
+                 create_file_request{remote_file_names[i], true},
+                 LPC_TEST_HDFS,
+                 [&cf_resp](const create_file_response &resp) { cf_resp = resp; },
+                 nullptr)
                 ->wait();
             ASSERT_EQ(dsn::ERR_OK, cf_resp.err);
             ASSERT_NE(nullptr, cf_resp.file_handle.get());
@@ -370,7 +384,7 @@ TEST_P(HDFSClientTest, test_concurrent_upload_download)
                 p->upload(upload_request{local_file_names[i]},
                           LPC_TEST_HDFS,
                           [p, &local_file_names, &files_size, i](const upload_response &resp) {
-                              printf("file %s upload finished.\n", local_file_names[i].c_str());
+                              fmt::printf("file {} upload finished.\n", local_file_names[i]);
                               ASSERT_EQ(dsn::ERR_OK, resp.err);
                               ASSERT_EQ(files_size[i], resp.uploaded_size);
                               ASSERT_EQ(files_size[i], p->get_size());
@@ -388,10 +402,11 @@ TEST_P(HDFSClientTest, test_concurrent_upload_download)
         std::vector<block_file_ptr> block_files;
         for (int i = 0; i < total_files; ++i) {
             create_file_response cf_resp;
-            s->create_file(create_file_request{remote_file_names[i], true},
-                           LPC_TEST_HDFS,
-                           [&cf_resp](const create_file_response &r) { cf_resp = r; },
-                           nullptr)
+            s->create_file(
+                 create_file_request{remote_file_names[i], true},
+                 LPC_TEST_HDFS,
+                 [&cf_resp](const create_file_response &r) { cf_resp = r; },
+                 nullptr)
                 ->wait();
             ASSERT_EQ(dsn::ERR_OK, cf_resp.err);
             ASSERT_NE(nullptr, cf_resp.file_handle.get());
@@ -406,7 +421,7 @@ TEST_P(HDFSClientTest, test_concurrent_upload_download)
                 LPC_TEST_HDFS,
                 [&files_md5sum, &downloaded_file_names, &files_size, i, p](
                     const download_response &dr) {
-                    printf("file %s download finished\n", downloaded_file_names[i].c_str());
+                    fmt::printf("file {} download finished\n", downloaded_file_names[i]);
                     ASSERT_EQ(dsn::ERR_OK, dr.err);
                     ASSERT_EQ(files_size[i], dr.downloaded_size);
                     ASSERT_EQ(files_size[i], p->get_size());
